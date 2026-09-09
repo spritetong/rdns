@@ -1,0 +1,60 @@
+global:
+  interval: 2
+  timeout: 5
+  shutdown_timeout: 3
+  worker_threads: 2
+  log_level: "info"
+
+notification:
+  on_change:
+    enabled: true
+    method: "POST"
+    url: "http://127.0.0.1:8899/api/v1/notify"
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {
+        "task": "{{task_name}}",
+        "status": "{{status}}",
+        "new_ip": "{{new_ip}}"
+      }
+
+tasks:
+  - name: "mock-dualstack"
+    interval: 2
+    ipv4:
+      enabled: true
+      source: "remote"
+      urls:
+        - "http://127.0.0.1:8899/ip/v4"
+    ipv6:
+      enabled: true
+      source: "remote"
+      urls:
+        - "http://127.0.0.1:8899/ip/v6"
+    request:
+      method: "GET"
+      url: "http://127.0.0.1:8899/nic/update?hostname=test.example.com&myip={{ipv4}}&myipv6={{ipv6}}&password=${TEST_PASS:-mocksecret}"
+      success_regex: "^(good|nochg)"
+
+  - name: "mock-v6"
+    interval: 2
+    domain: "v6.example.com"
+    ipv6:
+      enabled: true
+      source: "remote"
+      urls:
+        - "http://127.0.0.1:8899/ip/v6"
+    request:
+      method: "POST"
+      url: "http://127.0.0.1:8899/api/v1/ddns/update"
+      headers:
+        Authorization: "Bearer ${TEST_TOKEN:-tok123}"
+        Content-Type: "application/json"
+      body: |
+        {
+          "domain": "{{domain}}",
+          "ip": "{{ipv6}}"
+        }
+      success_contains:
+        - '"status":"success"'

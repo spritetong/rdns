@@ -1,0 +1,6 @@
+/target
+state.json
+*.tmp
+*.tmp.*
+__pycache__/
+*.pyc

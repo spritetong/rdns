@@ -1,0 +1,88 @@
+global:
+  interval: 300            # 全局默认轮询间隔（秒）
+  timeout: 10              # HTTP 请求超时（秒）
+  shutdown_timeout: 10     # 优雅停机排空最长等待时间（秒）
+  worker_threads: 2        # Tokio 异步工作线程数（设为 1 则启用极轻量单线程，不设默认自适应 CPU 核心数）
+  log_level: "info"        # trace | debug | info | warn | error
+  # proxy: "http://127.0.0.1:7890" # 可选全局代理 (支持 http / socks5)
+
+# 全局通用通知系统（可选）
+notification:
+  on_change:
+    enabled: true
+    method: "POST"
+    url: "https://api.example.com/notify"
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {
+        "title": "RDNS IP 变动通知",
+        "task": "{{task_name}}",
+        "old_ip": "{{old_ip}}",
+        "new_ip": "{{new_ip}}"
+      }
+  on_failure:
+    enabled: true
+    method: "POST"
+    url: "https://api.example.com/notify"
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {
+        "title": "RDNS 更新告警",
+        "task": "{{task_name}}",
+        "error": "{{error_message}}"
+      }
+
+tasks:
+  # 任务 1：Dynu 双栈原子更新（单请求同时推 v4 和 v6，支持环境变量注入）
+  - name: "dynu-office-dualstack"
+    interval: 600
+
+    ipv4:
+      enabled: true
+      source: "remote"
+      urls:
+        - "https://api.ipify.org"
+        - "https://ip4.seeip.org"
+
+    ipv6:
+      enabled: true
+      source: "remote"
+      urls:
+        - "https://api64.ipify.org"
+        - "https://ip6.seeip.org"
+      # 或者走网卡读取 (自动排除链路本地 fe80::、内网 ULA fc00::/7 及临时隐私扩展地址):
+      # source: "interface"
+      # interface: "eth0"
+      # ipv6_prefix: "240e:"
+
+    request:
+      method: "GET"
+      # 支持环境变量展开 ${DYNU_PASSWORD}，避免密码明文存储
+      url: "https://api.dynu.com/nic/update?hostname=wox-office.freeddns.org&myip={{ipv4}}&myipv6={{ipv6}}&password=${DYNU_PASSWORD}"
+      # 校验响应体，必须包含 good 或 nochg 才算成功
+      success_regex: "^(good|nochg)"
+
+  # 任务 2：另一个独立的纯 IPv6 更新示例（POST JSON 格式）
+  - name: "custom-v6-webhook"
+    interval: 300
+
+    ipv6:
+      enabled: true
+      source: "interface"
+      interface: "eth0"
+
+    request:
+      method: "POST"
+      url: "https://api.example.com/v1/ddns/update"
+      headers:
+        Authorization: "Bearer ${SECRET_TOKEN}"
+        Content-Type: "application/json"
+      body: |
+        {
+          "domain": "home.example.com",
+          "ip": "{{ipv6}}"
+        }
+      success_contains:
+        - '"status":"success"'

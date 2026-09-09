@@ -1,0 +1,21 @@
+[package]
+name = "rdns"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+parking_lot = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "socks"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+shellexpand = "3.1"
+get_if_addrs = "0.5"
+regex = "1.10"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
