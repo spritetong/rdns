@@ -39,7 +39,7 @@ impl InterfaceIpFetcher {
         let mut matched_interface = false;
 
         for iface in if_addrs {
-            if regex.is_match(&iface.name) {
+            if interface_matches(&iface.name, &regex) {
                 matched_interface = true;
                 if let std::net::IpAddr::V4(ip) = iface.addr.ip() {
                     if ip.is_loopback() {
@@ -76,7 +76,7 @@ impl InterfaceIpFetcher {
         let mut matched_interface = false;
 
         for iface in if_addrs {
-            if regex.is_match(&iface.name) {
+            if interface_matches(&iface.name, &regex) {
                 matched_interface = true;
                 if let std::net::IpAddr::V6(ip) = iface.addr.ip() {
                     if ip.is_loopback() || ip.is_multicast() {
@@ -115,7 +115,62 @@ impl InterfaceIpFetcher {
     }
 }
 
+fn interface_matches(iface_name: &str, regex: &Regex) -> bool {
+    if regex.is_match(iface_name) {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(friendly_name) = get_windows_friendly_name(iface_name)
+            && regex.is_match(&friendly_name)
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+#[cfg(windows)]
+fn get_windows_friendly_name(guid: &str) -> Option<String> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let subkey_path = format!(
+        r"SYSTEM\CurrentControlSet\Control\Network\{{4D36E972-E325-11CE-BFC1-08002BE10318}}\{}\Connection",
+        guid
+    );
+    let key = hklm.open_subkey(subkey_path).ok()?;
+    key.get_value("Name").ok()
+}
+
 fn is_cgnat(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
     octets[0] == 100 && (octets[1] >= 64 && octets[1] <= 127)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_print_all_interfaces() {
+        if let Ok(addrs) = get_if_addrs::get_if_addrs() {
+            for a in addrs {
+                #[cfg(windows)]
+                let friendly = get_windows_friendly_name(&a.name);
+                #[cfg(not(windows))]
+                let friendly: Option<String> = None;
+
+                println!(
+                    "IFACE: '{}' (friendly: {:?}), IP: {}",
+                    a.name,
+                    friendly,
+                    a.addr.ip()
+                );
+            }
+        }
+    }
 }

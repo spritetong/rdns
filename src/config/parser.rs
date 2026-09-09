@@ -44,6 +44,26 @@ pub fn expand_env_vars(input: &str) -> Result<String, ConfigError> {
     Ok(result)
 }
 
+fn expand_yaml_value(val: &mut serde_yaml::Value) -> Result<(), ConfigError> {
+    match val {
+        serde_yaml::Value::String(s) => {
+            *s = expand_env_vars(s)?;
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for item in seq {
+                expand_yaml_value(item)?;
+            }
+        }
+        serde_yaml::Value::Mapping(map) => {
+            for (_, v) in map.iter_mut() {
+                expand_yaml_value(v)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Load and parse a configuration file from a filesystem path.
 pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
     let path_ref = path.as_ref();
@@ -52,8 +72,9 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
         source: e,
     })?;
 
-    let expanded = expand_env_vars(&content)?;
-    let config: Config = serde_yaml::from_str(&expanded).map_err(ConfigError::Yaml)?;
+    let mut val: serde_yaml::Value = serde_yaml::from_str(&content).map_err(ConfigError::Yaml)?;
+    expand_yaml_value(&mut val)?;
+    let config: Config = serde_yaml::from_value(val).map_err(ConfigError::Yaml)?;
     Ok(config)
 }
 
@@ -77,5 +98,20 @@ mod tests {
 
         let missing_input = "Missing: ${NON_EXISTING_VAR_XYZ}";
         assert!(expand_env_vars(missing_input).is_err());
+    }
+
+    #[test]
+    fn test_yaml_comment_with_env_pattern_not_expanded() {
+        let yaml_text = r#"
+# This is a comment containing ${NOT_SET_ENV_VAR}
+global:
+  interval: 300
+tasks:
+  - name: "test"
+    request:
+      url: "https://example.com"
+"#;
+        let mut val: serde_yaml::Value = serde_yaml::from_str(yaml_text).unwrap();
+        assert!(expand_yaml_value(&mut val).is_ok());
     }
 }

@@ -60,7 +60,7 @@ tasks:
     request:
       method: "GET"
       # 支持环境变量展开 ${DYNU_PASSWORD}，避免密码明文存储
-      url: "https://api.dynu.com/nic/update?hostname=wox-office.freeddns.org&myip={{ipv4}}&myipv6={{ipv6}}&password=${DYNU_PASSWORD}"
+      url: "https://api.dynu.com/nic/update?hostname=wox-office.freeddns.org&myip={{ipv4}}&myipv6={{ipv6}}&password=${DYNU_PASSWORD:-YOUR_UPDATE_PASSWORD}"
       # 校验响应体，必须包含 good 或 nochg 才算成功
       success_regex: "^(good|nochg)"
 
@@ -77,7 +77,7 @@ tasks:
       method: "POST"
       url: "https://api.example.com/v1/ddns/update"
       headers:
-        Authorization: "Bearer ${SECRET_TOKEN}"
+        Authorization: "Bearer ${SECRET_TOKEN:-YOUR_SECRET_TOKEN}"
         Content-Type: "application/json"
       body: |
         {
