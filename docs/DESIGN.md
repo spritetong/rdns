@@ -1,83 +1,84 @@
-# RDNS 系统设计与架构规范 (Technical Design Specification)
+# RDNS System Design & Architecture Specification (Technical Design Specification)
 
-本文档定义了 **RDNS**（基于 Rust 的通用轻量级 Webhook DDNS 客户端）的系统架构、模块划分、并发控制、生命周期管理以及详细设计规范。
-
----
-
-## 一、 系统概述与设计哲学
-
-### 1.1 设计目标
-* **通用 Webhook 驱动**：不针对特定云厂商硬编码 SDK，将所有 DNS 操作抽象为 HTTP 模板请求引擎。
-* **极速启停与优雅退避**：构建结构化的任务生命周期树，基于异步信号与取消令牌实现亚毫秒级响应停机与任务排空。
-* **高可靠与轻量化**：跨平台纯静态编译交付（`rustls` + 操作系统原生证书库），零动态依赖；支持从单核路由器（单工作线程）到多核服务器无缝伸缩。
-
-### 1.2 核心架构原则
-
-1. **结构体驱动与零全局状态 (Struct-Centric & No Global State)**：
-   * 严禁使用 `static mut`、全局可变单例或散落的孤立函数。
-   * 所有功能均收敛为明确的结构体实例，通过构造函数注入依赖（Dependency Injection），明确生命周期与所有权。
-
-2. **协程全生命周期托管与 CancellationToken 树 (Full Handle Retention & Token Tree)**：
-   * 严禁无序裸跑 `tokio::spawn`。所有派生的异步任务均必须保留其 `JoinHandle` 并纳入任务管理器集中追踪。
-   * 基于 `tokio_util::sync::CancellationToken` 构建层级化的 Token 树：
-     `Root Token` $\rightarrow$ `Task Token` $\rightarrow$ `Request/Sleep Token`。
-   * 取消信号下发时，各任务在异步等待点（如 `sleep`、网络 IO）立即响应退出，实现最快时效的安全终止。
-
-3. **零锁/轻量锁并发哲学 (Zero-Lock / Parkinglot Fallback)**：
-   * 遵循“通过通信共享内存，而非通过内存共享通信”。每个任务调度器独占自身的状态机，调度过程完全无锁。
-   * 配置（`Config`）与底层 HTTP 客户端（`HttpClient`）初始化后为只读（Read-Only），通过 `Arc<T>` 安全跨线程共享，无需任何锁。
-   * 持久化状态同步采用内部消息通道（`mpsc` Channel）汇聚到单一的落盘服务（Actor 模式），消除跨任务竞争。
-   * 在必须使用互斥锁的极少数内部数据同步场景，强制使用 `parking_lot::RwLock` / `parking_lot::Mutex`，严禁使用重量级 `std::sync` 锁。
-
-4. **无重复与无无效防御 (DRY & Parse, Don't Validate)**：
-   * 业务请求与告警通知全面复用底层 HTTP 请求引擎与模板渲染器，严禁双轨制重复实现。
-   * 配置反序列化完成后即保证数据合法性，业务逻辑层信赖强类型结构体，杜绝在每一层调用重复进行防御性判空、重复清洗与无效转换。
+This document defines the system architecture, module division, concurrency control, lifecycle management, and detailed engineering specifications for **RDNS** (a universal, lightweight, Webhook-driven Dynamic DNS client written in Rust).
 
 ---
 
-## 二、 系统分层与模块架构
+## 1. System Overview & Design Philosophy
 
-### 2.1 源码模块结构
+### 1.1 Design Goals
+
+* **Universal Webhook-Driven**: Eliminates vendor-specific SDK hardcoding by abstracting all DNS operations into an expressive HTTP template request engine.
+* **Rapid Startup/Shutdown & Graceful Drain**: Constructs a structured task lifecycle hierarchy, achieving sub-millisecond response for shutdown and task draining via asynchronous signals and cancellation tokens.
+* **High Reliability & Lightweight Footprint**: Pure static compilation (`rustls` + platform-native root certificate store) with zero dynamic dependencies. Seamlessly scales from single-core embedded routers (single-threaded runtime) to multi-core servers.
+
+### 1.2 Core Architectural Principles
+
+1. **Struct-Centric & No Global State**:
+   * Forbids `static mut`, global mutable singletons, or untracked standalone functions.
+   * All capabilities converge into concrete struct instances, with dependencies injected via constructors (Dependency Injection) to enforce clear lifecycles and ownership.
+
+2. **Full Handle Retention & Token Tree**:
+   * Prohibits unmanaged `tokio::spawn` calls. Every spawned asynchronous task must retain its `JoinHandle` and register with a centralized task manager for tracking.
+   * Constructs a hierarchical cancellation token tree using `tokio_util::sync::CancellationToken`:
+     `Root Token` $\rightarrow$ `Task Token` $\rightarrow$ `Request/Sleep Token`.
+   * When a cancellation signal is dispatched, tasks waiting on asynchronous suspension points (e.g., `sleep`, network I/O) terminate immediately.
+
+3. **Zero-Lock / Light-Lock Concurrency (Share Nothing Architecture)**:
+   * Follows the principle: "Do not communicate by sharing memory; instead, share memory by communicating." Each task scheduler maintains its own state machine, operating completely lock-free.
+   * Configuration (`Config`) and the underlying HTTP client (`HttpClient`) are read-only once initialized, safely shared across threads via `Arc<T>` with zero lock overhead.
+   * Persistence operations dispatch state mutations over asynchronous channels (`mpsc::channel`) to a single background writer Actor, eliminating cross-task disk contention.
+   * In rare synchronization scenarios where locks are unavoidable, `parking_lot::RwLock` / `parking_lot::Mutex` must be used instead of standard library locks.
+
+4. **DRY & "Parse, Don't Validate"**:
+   * Operational requests and notification alerts share the same underlying HTTP engine and template renderer, preventing dual-track code duplication.
+   * Configuration data validity is guaranteed upon deserialization. Business logic layers trust strongly typed structs, avoiding defensive null checks, duplicate sanitization, or redundant conversions across layers.
+
+---
+
+## 2. System Layering & Module Architecture
+
+### 2.1 Source Module Structure
 
 ```text
 src/
-├── main.rs                 # 进程入口：CLI 解析、运行时构建、顶级错误捕获
-├── cli.rs                  # 命令行参数模型与校验 (Clap Derive)
-├── config/                 # 配置领域模块
-│   ├── mod.rs              # 统一导出 Config 结构体与解析接口
-│   ├── parser.rs           # YAML 反序列化、环境变量展开 (${VAR})
-│   ├── model.rs            # 强类型配置实体定义 (Global, Interface, Task, Request)
-│   └── validator.rs        # 业务级规则校验 (网卡名、重试周期、正则表达式等)
-├── provider/               # 预定义 DDNS 服务商注册中心
-│   └── mod.rs              # 内置 dynu, dynv6, duckdns, he, noip 模板与 CLI 查询
-├── lifecycle/              # 生命周期与停机管理
-│   ├── mod.rs              # 生命周期编排服务 (LifecycleManager)
-│   ├── signal.rs           # 跨平台信号监听器 (POSIX Unix Signal & Windows Console)
-│   └── task_manager.rs     # JoinHandle 集中追踪与排空超时控制器
-├── ip/                     # IP 探测与 DNS 核对引擎
-│   ├── mod.rs              # InterfaceIpResolver 调度接口与模块导出
-│   ├── dns.rs              # 基于 hickory-resolver 的云端 DNS 记录核对引擎
-│   ├── remote.rs           # 基于协议栈强制绑定的远程 HTTP 探测器
-│   └── interface.rs        # 本地网卡直读与智能净化器 (过滤 ULA、fe80::、优先 SLAAC)
-├── engine/                 # HTTP Webhook 驱动引擎
-│   ├── mod.rs              # HttpEngine 外观服务
-│   ├── client.rs           # 基于 rustls-tls-native-roots 的 Client 构造与连接池
-│   ├── template.rs         # {{ipv4}}, {{ipv6}}, {{domain}} 占位符流式替换
-│   ├── executor.rs         # 请求构造与执行 (支持 Dry-Run 模式拦截)
-│   └── verifier.rs         # 响应状态码与正则/包含断言校验
-├── scheduler/              # 任务调度与状态机
-│   ├── mod.rs              # 调度集群服务 (SchedulerService)
-│   └── task.rs             # 接口调度协程 (InterfaceScheduler) 与单任务执行器 (TaskExecutor)
-├── persistence/            # 状态持久化
-│   ├── mod.rs              # StateStore 服务
-│   └── atomic_file.rs      # 基于临时文件与系统 Rename 的原子落盘保证
-├── notification/           # 通用通知系统
-│   ├── mod.rs              # NotificationDispatcher 通知分发器
-│   └── events.rs           # 变更、失败、恢复事件模型
-└── error.rs                # 领域强类型错误定义 (基于 thiserror)
+├── main.rs                 # Process entrypoint: CLI parsing, runtime builder, top-level error handling
+├── cli.rs                  # CLI argument models and validation (Clap Derive)
+├── config/                 # Configuration domain module
+│   ├── mod.rs              # Unified Config export and parsing interface
+│   ├── parser.rs           # YAML deserialization and environment variable expansion (${VAR})
+│   ├── model.rs            # Strongly typed configuration entities (Global, Interface, Task, Request)
+│   └── validator.rs        # Business rule validation (interface names, retry intervals, regex syntax)
+├── provider/               # Predefined DDNS provider registry
+│   └── mod.rs              # Built-in provider templates (dynu, dynv6, duckdns, he, noip) and CLI introspection
+├── lifecycle/              # Lifecycle and shutdown coordination
+│   ├── mod.rs              # Lifecycle orchestration service (LifecycleManager)
+│   ├── signal.rs           # Cross-platform signal listeners (POSIX Unix Signals & Windows Console)
+│   └── task_manager.rs     # Centralized JoinHandle tracking and drain timeout controller
+├── ip/                     # IP resolution and DNS verification engine
+│   ├── mod.rs              # InterfaceIpResolver dispatch interface and module exports
+│   ├── dns.rs              # Remote DNS record verification via hickory-resolver
+│   ├── remote.rs           # Remote HTTP prober with explicit protocol-stack binding
+│   └── interface.rs        # Local interface IP reader (filters ULA, fe80::, RFC 4941; prioritizes SLAAC)
+├── engine/                 # HTTP Webhook engine
+│   ├── mod.rs              # HttpEngine facade
+│   ├── client.rs           # Client builder with rustls-tls-native-roots and connection pools
+│   ├── template.rs         # Safe {{ipv4}}, {{ipv6}}, {{domain}} placeholder substitution
+│   ├── executor.rs         # Request construction and execution (supports Dry-Run preview interception)
+│   └── verifier.rs         # Status code and regex/contains assertion verifier
+├── scheduler/              # Task scheduler and state machine
+│   ├── mod.rs              # SchedulerService cluster management
+│   └── task.rs             # InterfaceScheduler probe loop and TaskExecutor (JoinSet concurrency, backoff)
+├── persistence/            # State persistence
+│   ├── mod.rs              # StateStore service (Channel Actor with debounced disk writes)
+│   └── atomic_file.rs      # Atomic file persistence via temporary file rename
+├── notification/           # Generic notification system
+│   ├── mod.rs              # NotificationDispatcher
+│   └── events.rs           # Change, failure, and recovery event models
+└── error.rs                # Strongly typed domain errors (via thiserror)
 ```
 
-### 2.2 核心对象拓扑与依赖注入
+### 2.2 Core Object Topology & Dependency Injection
 
 ```mermaid
 graph TD
@@ -114,27 +115,28 @@ graph TD
 
 ---
 
-## 三、 生命周期与优雅停机详细设计
+## 3. Detailed Lifecycle & Graceful Shutdown Design
 
-### 3.1 CancellationToken 树级联拓扑
+### 3.1 CancellationToken Tree Cascade Topology
 
 ```text
-[Root CancellationToken] (由 LifecycleManager 持有)
+[Root CancellationToken] (Held by LifecycleManager)
    │
    ├── [Task 1 Token] (Child Token)
    │      │
-   │      ├── [Sleep/Wait Token] ────────> 快速终止轮询等待
-   │      └── [In-Flight Protection] ────> 标记执行中状态，保护单次请求
+   │      ├── [Sleep/Wait Token] ────────> Immediately aborts polling sleep
+   │      └── [In-Flight Protection] ────> Marks active execution, protects current request
    │
    ├── [Task 2 Token] (Child Token)
    │      └── ...
    │
-   └── [State Persistence Actor Token] ──> 等待各任务排空后执行最终落盘
+   └── [State Persistence Actor Token] ──> Flushes remaining mutations after tasks drain
 ```
 
-1. **响应最快退出机制 (Fast-path Interrupt)**：
-   任务生命周期中主要时间消耗在两次更新之间的定时休眠（`interval`）。
-   每个任务在循环中通过 `tokio::select!` 监听自身子 Token：
+1. **Fast-path Interrupt**:
+   Most of a task's lifecycle is spent sleeping between update rounds (`interval`).
+   Inside the execution loop, tasks listen to their child token using `tokio::select!`:
+
    ```rust
    tokio::select! {
        _ = child_token.cancelled() => {
@@ -142,19 +144,20 @@ graph TD
            break;
        }
        _ = tokio::time::sleep(interval) => {
-           // 定时到达，执行更新操作
+           // Interval reached; perform update
        }
    }
    ```
-   只要 Root Token 被取消，休眠瞬间中断，耗时 $< 1\text{ms}$。
 
-2. **进行中请求保护 (In-Flight Drain Guard)**：
-   当任务正在发起网络请求时，必须保证外部 HTTP 请求与断言执行完整，防止破坏服务商侧状态。
-   任务在进入执行阶段前记录执行屏障，主停机流程等待所有注册的当前轮次执行完成。
+   Once the Root Token is cancelled, sleep is interrupted instantaneously ($< 1\text{ms}$).
 
-### 3.2 跨平台信号监听实现抽象 (`lifecycle/signal.rs`)
+2. **In-Flight Drain Guard**:
+   When a task is actively executing a network request, the external HTTP call and response assertion must run to completion to prevent inconsistent remote state.
+   Tasks register an execution barrier before dispatch, and the shutdown procedure awaits active in-flight rounds.
 
-统一屏蔽不同操作系统信号处理的底层差异，并支持 POSIX `SIGHUP` 配置平滑热重载：
+### 3.2 Cross-Platform Signal Listener (`lifecycle/signal.rs`)
+
+Normalizes low-level OS signal handling and supports POSIX `SIGHUP` configuration hot-reloading:
 
 ```rust
 pub enum ProcessSignal {
@@ -201,7 +204,7 @@ impl SignalListener {
 }
 ```
 
-### 3.3 JoinHandle 任务管理器 (`lifecycle/task_manager.rs`)
+### 3.3 JoinHandle Task Manager (`lifecycle/task_manager.rs`)
 
 ```rust
 pub struct TaskManager {
@@ -252,19 +255,19 @@ impl TaskManager {
 
 ---
 
-## 四、 并发模型与状态管理
+## 4. Concurrency Model & State Management
 
-### 4.1 零锁并发设计原则 (Share Nothing Architecture)
+### 4.1 Zero-Lock Concurrency Architecture (Share Nothing Architecture)
 
-1. **接口协程独立与任务扇出 (Interface Isolation & Task Fanout)**：
-   系统按 `interfaces` 分配独立的 `InterfaceScheduler`，每个接口在后台常驻一个独立的 Tokio 协程。接口独立探测自身 IP，探测结果通过只读数据扇出给绑定的所有 `TaskExecutor`。各接口调度器持有独立的 `normal_interval` 与 `retry_interval` 状态，互不阻塞，杜绝重复网络嗅探。
+1. **Interface Isolation & Task Fanout**:
+   The system assigns an independent `InterfaceScheduler` to each defined `interface`. Each interface runs a dedicated background coroutine that independently probes its assigned IP addresses. The resolved IP is fanned out to bound `TaskExecutor` instances as read-only data. Schedulers maintain distinct `normal_interval` and `retry_interval` states without cross-interface blocking or duplicate network probes.
 
-2. **只读数据无锁化**：
-   全局配置结构体 `Config`、底层 HTTP 连接池与 `DnsResolver` 通过 `Arc` 进行共享，全系统生命周期为只读，零锁开销。
+2. **Lock-Free Read-Only State**:
+   Global configuration (`Config`), HTTP connection pools, and `DnsResolver` are wrapped in `Arc` and shared across the application. They remain strictly read-only throughout the process lifecycle with zero locking overhead.
 
-### 4.2 状态持久化与原子落盘协议 (`persistence/atomic_file.rs`)
+### 4.2 State Persistence & Atomic Flush Protocol (`persistence/atomic_file.rs`)
 
-为了防止系统在关机、注销或停电瞬间产生半写损坏的持久化文件，`StateStore` 实现原子文件写入机制：
+To prevent corrupt or truncated persistence files during unexpected termination, logoffs, or power outages, `StateStore` implements atomic file writing:
 
 ```mermaid
 sequenceDiagram
@@ -272,31 +275,31 @@ sequenceDiagram
     participant Store as StateStore (Actor / Channel)
     participant Disk as File System
     
-    Worker->>Store: 发送 StateUpdateEvent
-    Store->>Disk: 1. 序列化为 JSON 写入 state.json.tmp
-    Store->>Disk: 2. 执行 sync_all 强制刷盘
-    Store->>Disk: 3. 执行 std::fs::rename("state.json.tmp", "state.json")
-    Note over Disk: OS 级别原子重命名，杜绝脏文件
+    Worker->>Store: Send StateUpdateEvent
+    Store->>Disk: 1. Serialize to JSON and write to state.json.tmp
+    Store->>Disk: 2. Execute sync_all to flush buffers
+    Store->>Disk: 3. Execute std::fs::rename("state.json.tmp", "state.json")
+    Note over Disk: OS-level atomic rename prevents corrupt files
 ```
 
-* **Windows / Linux / macOS 统一兼容**：
-  Rust 标准库的 `std::fs::rename` 在 POSIX 系统上天然原子；在 Windows 上，底层对应 `MoveFileExW`（使用 `MOVEFILE_REPLACE_EXISTING` 标识覆盖旧文件）。若目标文件被独占，`atomic_file` 提供重试与退避保障。
+* **Cross-Platform Compatibility**:
+  `std::fs::rename` is inherently atomic on POSIX systems. On Windows, it maps to `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`. If the target file is temporarily locked, `atomic_file` provides retries with exponential backoff.
 
 ---
 
-## 五、 核心子系统详细设计
+## 5. Core Subsystems Detailed Design
 
-### 5.1 配置系统与环境变量注入 (`config/`)
+### 5.1 Configuration System & Environment Injection (`config/`)
 
-#### 设计规则
-* **强类型解析**：使用 `serde_yaml` 将 YAML 转换为强类型结构体。
-* **环境变量展开**：反序列化前或反序列化字符串字段时，通过轻量解析器将 `${VARIABLE:-default}` 动态替换为系统环境变量，防止凭据泄露。
-* **严格校验 (Parse, Don't Validate)**：
-  配置加载时集中校验：URL 格式合法性、`interval > 0`、网卡名称非空、正则表达式可被正确编译（编译结果缓存为 `regex::Regex`，后续无需重复编译）。
+* **Strongly Typed Deserialization**: Uses `serde_yaml` to deserialize configurations into typed Rust structures.
+* **Environment Variable Expansion**: Recursively parses `${VARIABLE:-default}` expressions during YAML deserialization, keeping secrets out of configuration files.
+* **Validation (Parse, Don't Validate)**:
+  Centrally validates URL formats, positive intervals, non-empty interface names, and compiles regular expressions into cached `regex::Regex` instances during initialization.
 
-### 5.2 IP 探测引擎 (`ip/`)
+### 5.2 IP Detection Engine (`ip/`)
 
-#### Trait 抽象定义
+#### Trait Definition
+
 ```rust
 #[async_trait::async_trait]
 pub trait IpFetcher: Send + Sync {
@@ -305,54 +308,58 @@ pub trait IpFetcher: Send + Sync {
 }
 ```
 
-#### 探测器实现规范
-1. **Remote HTTP 探测 (`remote.rs`)**：
-   * 必须通过 `reqwest::ClientBuilder::local_address` 分离协议栈：
-     * 查询 IPv4 时强制绑定 `0.0.0.0`，杜绝系统双栈网卡走 v6 访问接口。
-     * 查询 IPv6 时强制绑定 `::`，杜绝降级到 v4。
-   * 支持多 URL 备选，按配置顺序依次回退，直到获得有效 IP 或耗尽重试。
+#### Detector Specifications
 
-2. **本地网卡直读与智能净化 (`interface.rs`)**：
-   * 遍历系统网络接口（`ifaddrsx::get_interfaces`），按用户正则匹配接口名称（如 `eth0`、`enp.*` 或 Windows 友好名称如 `Local`，原生支持 `friendly_name`）。
-   * **IPv6 净化流水线**：
-     1. 排除链路本地地址（`fe80::/10`）。
-     2. 排除内网唯一本地地址 ULA（`fc00::/7` 与 `fd00::/7`）。
-     3. 排除回环（`::1`）与多播地址。
-     4. 排除 RFC 4941 临时隐私扩展地址（Temporary Addresses）。
-   * **RFC 4291 EUI-64 SLAAC 智能识别 (`prefer_slaac: true`)**：
-     * 宽带运营商常同时分配 DHCPv6 有状态地址（如 `::737`）与 SLAAC 无状态地址（如 `::dabb:c1ff:fe67:6221`）。
-     * 依据 RFC 4291 规范，基于物理 MAC 地址派生的 EUI-64 SLAAC 地址在 128 位八位字节中满足 `octets[11] == 0xff && octets[12] == 0xfe`。
-     * 当开启 `prefer_slaac: true` 时，探测器精准匹配并优先选取该稳定地址。
-   * **IPv4 智能防护**：
-     * 默认自动过滤 RFC 1918 私网地址（`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`）与 CGNAT 地址（`100.64.0.0/10`）。
-     * 当任务配置 `allow_private: true` 时才允许保留私网 IP。
+1. **Remote HTTP Probing (`remote.rs`)**:
+   * Uses `reqwest::ClientBuilder::local_address` to enforce protocol stack binding:
+     * Binds `0.0.0.0` when probing IPv4 to prevent dual-stack adapters from routing through IPv6.
+     * Binds `::` when probing IPv6 to prevent fallback to IPv4.
+   * Supports multiple fallback URLs, attempted sequentially until a valid IP is acquired.
 
-### 5.3 基于 hickory-resolver 的云端 DNS 核对与纠错引擎 (`ip/dns.rs`)
+2. **Local Interface Extraction & Address Sanitization (`interface.rs`)**:
+   * Enumerates system network interfaces via `ifaddrsx::get_interfaces`, matching by regex pattern or adapter friendly names (supported on Windows).
+   * **IPv6 Sanitization Pipeline**:
+     1. Excludes Link-Local addresses (`fe80::/10`).
+     2. Excludes Unique Local Addresses (ULA, `fc00::/7` and `fd00::/7`).
+     3. Excludes Loopback (`::1`) and Multicast addresses.
+     4. Excludes RFC 4941 temporary privacy addresses.
+   * **RFC 4291 EUI-64 SLAAC Recognition (`prefer_slaac: true`)**:
+     * ISPs frequently assign stateful DHCPv6 addresses (e.g., `::737`) alongside stateless SLAAC addresses (e.g., `::dabb:c1ff:fe67:6221`).
+     * Following RFC 4291, MAC-derived EUI-64 SLAAC addresses have octets matching `octets[11] == 0xff && octets[12] == 0xfe`.
+     * When `prefer_slaac: true` is enabled, the detector prioritizes this long-term stable address.
+   * **IPv4 Private Address Protection**:
+     * Automatically filters out RFC 1918 private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and CGNAT addresses (`100.64.0.0/10`) by default.
+     * Private addresses are preserved only when `allow_private: true` is explicitly configured.
 
-为了杜绝“云端 DNS 记录被手动改错、本地 IP 未变导致 RDNS 无法感知与纠错”的潜在漏洞，系统集成 Rust 社区标准库 `hickory-resolver`（v0.26.2 Tokio 运行时驱动）：
+### 5.3 Remote DNS Verification Engine (`ip/dns.rs`)
 
-1. **解析器构建策略**：
-   * 若配置了 `dns_server`（如 `"8.8.8.8"` 或 `"1.1.1.1:53"`），通过 `parse_dns_server_addr` 解析目标 IP 与端口，构造 `NameServerConfig::udp_and_tcp`，并通过 `Resolver::builder_with_config` 创建针对该服务器的异步解析器；
-   * 若未配置 `dns_server`，调用 `Resolver::builder_tokio()` 自动读取宿主机系统原生 DNS 配置（Windows 注册表 / Linux `resolv.conf`）。
-2. **核对与纠错流程**：
-   * 在每个任务轮询时，若本地 IP 未发生变化，且任务配置了 `domain`，主动向 DNS 服务器核查该域名的 A / AAAA 解析记录；
-   * 若发现云端记录与实际本地 IP 不一致，立即判定异常并触发 DDNS 纠错更新；
-   * 带有 60 秒冷却防抖保护（`last_success_time < 60s` 时跳过 DNS 查询），避免因 DNS 传播延迟导致反复重复请求。
+To prevent undetected record drift when cloud records are modified out-of-band, RDNS integrates `hickory-resolver` (v0.26.2 Tokio runtime):
 
-### 5.4 自定义请求引擎与 TLS 规范 (`engine/`)
+1. **Resolver Construction**:
+   * If `dns_server` is configured (e.g., `"8.8.8.8"` or `"1.1.1.1:53"`), parses target IP and port, builds `NameServerConfig::udp_and_tcp`, and instantiates an asynchronous resolver via `Resolver::builder_with_config`.
+   * If unspecified, initializes `Resolver::builder_tokio()` to read native host DNS configurations (Windows Registry / Linux `resolv.conf`).
+2. **Verification & Reconciliation**:
+   * During task execution when the local IP is unchanged and a `domain` is configured, queries remote A / AAAA records.
+   * If remote records differ from the local IP, flags an anomaly and triggers a corrective DDNS update.
+   * Enforces a 60-second cooldown period after successful updates (`last_success_time < 60s`) to prevent redundant queries during DNS TTL propagation.
 
-#### 1. 客户端单例与任务级连接池 (`engine/client.rs` & `engine/executor.rs`)
-* 全局默认维护唯一的底层 `reqwest::Client` 实例，内建连接池，避免频繁进行 TCP/TLS 握手。
-* **任务级独立连接池 (`(Option<proxy>, tls_insecure)`)**：
-  * `RequestExecutor` 维护默认客户端以及基于 `parking_lot::RwLock<HashMap<(Option<String>, bool), reqwest::Client>>` 的自定义客户端连接池。
-  * 当任务配置了 `tls_insecure: true` 或专用 `proxy` 时，按需构建或复用对应的自定义 Client，杜绝任务级 TLS/代理配置被全局客户端忽略。
-  * 若启用 `tls_insecure: true`，在控制台和日志中输出安全性警示：
-    `tracing::warn!(task = %task_name, "Task configured with tls_insecure: true. TLS certificate verification is DISABLED.");`。
-* **TLS 规范**：
-  * 使用 `rustls-tls-native-roots`。在初始化构建 Client 时，自动调用系统证书装载接口（加载 Windows 根证书存储库、macOS Keychain、Linux 系统 CA 目录）。
+### 5.4 Custom Request Engine & TLS Specification (`engine/`)
 
-#### 2. 安全模板变量替换与命名参数扩展 (`engine/template.rs`)
-* 模板渲染接收结构体上下文，统一支持内置插槽与自定义命名参数：
+#### 1. Client Caching & Per-Task Connection Pools (`engine/client.rs` & `engine/executor.rs`)
+
+* Maintains a default `reqwest::Client` with connection pooling for general use.
+* **Per-Task Connection Pools (`(Option<proxy>, tls_insecure)`)**:
+  * `RequestExecutor` maintains a custom client pool using `parking_lot::RwLock<HashMap<(Option<String>, bool), reqwest::Client>>`.
+  * Tasks configured with `tls_insecure: true` or dedicated proxies construct and cache separate clients.
+  * Emits security warnings when `tls_insecure: true` is active:
+    `tracing::warn!(task = %task_name, "Task configured with tls_insecure: true. TLS certificate verification is DISABLED.");`
+* **TLS Security**:
+  * Uses `rustls-tls-native-roots`, importing platform root certificates (Windows Certificate Store, macOS Keychain, Linux `/etc/ssl/certs`).
+
+#### 2. Template Substitution & Custom Arguments (`engine/template.rs`)
+
+* Accepts a structured context supporting built-in slots and custom parameters:
+
   ```rust
   pub struct TemplateContext<'a> {
       pub ipv4: Option<&'a str>,
@@ -362,85 +369,90 @@ pub trait IpFetcher: Send + Sync {
       pub args: Option<&'a HashMap<String, String>>,
   }
   ```
-* **统一替换流水线 (Unified Placeholder Pipeline)**：
-  * 内置插槽：`{{ipv4}}`、`{{ipv6}}`、`{{domain}}`、`{{timestamp}}`。
-  * 自定义命名插槽：当插槽非内置名称时，在 `ctx.args` 映射表中查找对应键（如 `{{password}}`、`{{token}}`、`{{zone_id}}`）。
-  * **环境变量联动展开**：`src/config/parser.rs` 的 `expand_yaml_value` 在 YAML 反序列化阶段递归遍历所有 Mapping 节点，因此 `args` 中的 `${DYNU_PASSWORD:-default}` 会先被动态替换为环境变量值，无需在模板层引入冗余的环境变量读取逻辑。
-* **安全替换断言**：
-  在执行替换时，若模板中引用了上下文中缺失的插槽（如未获取到 IPv4 却使用了 `{{ipv4}}`，或 `args` 中未提供 `password`），立即中断并返回强类型错误 `TemplateError::MissingSlot`，严禁将包含明文 `{{...}}` 的错误 URL 发往服务商。
 
-#### 3. 有界流式响应体读取与 DoS 防御
-* **DDNS 响应体上限 (1 MiB)**：
-  通过 `read_bounded_text` 配合 `resp.chunk().await` 限制最大读取字节数为 `MAX_RESP_BODY_SIZE = 1024 * 1024`。超过上限立即熔断抛出 `RdnsError::Assertion`，防止异常或恶意上游无休止推送数据导致内存溢出（OOM）。
-* **远程 IP 探测响应体上限 (4 KiB)**：
-  通过 `read_ip_text` 限制远程 IP 探测响应不超过 4096 字节。
+* **Unified Substitution Pipeline**:
+  * Built-in slots: `{{ipv4}}`, `{{ipv6}}`, `{{domain}}`, `{{timestamp}}`.
+  * Custom named slots: Looked up from `ctx.args` (e.g., `{{password}}`, `{{token}}`, `{{zone_id}}`).
+  * Environment variables in `args` (such as `${DYNU_PASSWORD:-default}`) are expanded during configuration loading.
+* **Safe Replacement Validation**:
+  If a referenced slot is missing from the context (e.g., `{{ipv4}}` referenced without IPv4 enabled, or missing `args`), returns `TemplateError::MissingSlot` and halts before sending malformed URLs.
 
-#### 4. 演练模式拦截与 Unicode 字符边界安全脱敏 (`engine/executor.rs`)
-* 当 CLI 传入 `--dry-run` 时：
-  * 依然完整执行 IP 探测与模板渲染；
-  * `Executor` 拦截实际的网络发送逻辑，在控制台通过结构化格式输出即将发送的 HTTP 请求：
-    * Method、URL、Body、断言规则预览
-    * **广谱敏感 Headers 脱敏**：覆盖名称包含 `authorization`、`token`、`secret`、`password`、`key`、`auth` 的所有头字段。
-    * **Unicode 边界保护 (`mask_secret`)**：使用 `char_indices().nth(2)` 定位前 2 个 Unicode 字符的字节边界，彻底杜绝在多字节 UTF-8 字符（如中文、欧元符号 `€`、Emoji 等）内部切片引发的 Panic。
-    * **原串字节坐标大小写无关定位 (`find_key_ci`)**：直接在原串字节切片上匹配敏感查询键（如 `password=`），杜绝全局 `to_lowercase()` 改变多字节长度所导致的偏移错位。
-  * 直接模拟返回虚拟成功结果，便于调试。
+#### 3. Bounded Streaming Response Reading & DoS Protection
 
-### 5.5 调度器与状态自适应双速轮询状态机 (`scheduler/`)
+* **DDNS Response Limit (1 MiB)**:
+  `read_bounded_text` limits responses to `MAX_RESP_BODY_SIZE = 1024 * 1024` bytes using `resp.chunk().await`, short-circuiting on overflow with `RdnsError::Assertion` to prevent memory exhaustion (OOM).
+* **Remote IP Probe Limit (4 KiB)**:
+  `read_ip_text` limits remote IP probe responses to 4096 bytes.
 
-为了兼顾“稳态下的低开销与防频控”与“故障态下的快速自愈”，调度系统设计为**状态自适应双速轮询机制**：
+#### 4. Dry-Run Mode & Unicode-Safe Masking (`engine/executor.rs`)
 
-#### 1. 双速决策与收敛矩阵
+* When `--dry-run` is specified:
+  * IP probing and template rendering execute normally.
+  * The executor intercepts network dispatch, printing formatted previews to the console:
+    * HTTP Method, URL, Body, assertion rules.
+    * **Sensitive Header Masking**: Headers containing `authorization`, `token`, `secret`, `password`, `key`, or `auth` are masked.
+    * **Unicode Boundary Protection (`mask_secret`)**: Uses `char_indices().nth(2)` to locate UTF-8 character boundaries, preventing panics on multi-byte characters (Chinese characters, Euro symbol `€`, emoji).
+    * **Case-Insensitive Query Key Matching (`find_key_ci`)**: Matches sensitive query keys directly on byte slices without transforming the entire string to lowercase, preventing multi-byte offset shifts.
+  * Returns simulated success without making live network writes.
 
-| 本次 Update 状态 | 远端 DNS 查询结果 | 下一次休眠时长 | 状态机行为与设计考量 |
+### 5.5 Adaptive Dual-Speed Polling State Machine (`scheduler/`)
+
+Balancing steady-state quota conservation with rapid failure recovery, RDNS implements an **adaptive dual-speed polling state machine**:
+
+#### 1. Decision & Convergence Matrix
+
+| Current Update State | Remote DNS Query Result | Next Sleep Duration | State Machine Behavior & Rationale |
 | :--- | :--- | :--- | :--- |
-| **无需更新** (IP未变且DNS一致) | 一致 (`== actual_ip`) | `normal_interval` (300s) | 稳态低频运行，节省网络开销 |
-| **Update 成功** | 不一致 (DNS 传播延迟中) | `normal_interval` (300s) | **关键保护**：更新已投递，静待 DNS TTL 自然生效，严防重复刷新刷爆 API |
-| **Update 成功** | 一致 (`== actual_ip`) | `normal_interval` (300s) | 稳态运行 |
-| **Update 失败** | 一致 (`== actual_ip`) | `normal_interval` (300s) | 云端 DNS 本身正确，维持正常周期 |
-| **Update 失败** | **不一致** (`!= actual_ip` 或查无记录) | **`retry_interval` (60s)** | **处于真实故障态，缩短周期至 60 秒快速重试以尽早自愈** |
+| **No Update Needed** (IP unchanged & DNS matches) | Matches (`== actual_ip`) | `normal_interval` (300s) | Steady-state low-frequency polling |
+| **Update Succeeded** | Mismatches (DNS TTL propagating) | `normal_interval` (300s) | **Critical protection**: Update sent; awaits TTL expiration without API storming |
+| **Update Succeeded** | Matches (`== actual_ip`) | `normal_interval` (300s) | Steady-state operation |
+| **Update Failed** | Matches (`== actual_ip`) | `normal_interval` (300s) | Remote DNS is already correct; maintains normal interval |
+| **Update Failed** | **Mismatches** (`!= actual_ip` or unresolvable) | **`retry_interval` (60s)** | **Active failure state; shortens interval to 60s for rapid recovery** |
 
-#### 2. 双速状态机流转图
+#### 2. State Machine Transition Diagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> SteadyState: 启动 / 初始化
+    [*] --> SteadyState: Startup / Initialization
     
-    state "稳态 (normal_interval, 300s)" as SteadyState
-    state "快速恢复态 (retry_interval, 60s)" as RetryState
+    state "Steady State (normal_interval, 300s)" as SteadyState
+    state "Reconciliation State (retry_interval, 60s)" as RetryState
 
-    SteadyState --> FetchInterfaceIP: 定时到达 (300s)
-    RetryState --> FetchInterfaceIP: 定时到达 (60s)
+    SteadyState --> FetchInterfaceIP: Timer expired (300s)
+    RetryState --> FetchInterfaceIP: Timer expired (60s)
 
-    FetchInterfaceIP --> DiffAndDNSCheck: 获得实际 IPv4/IPv6
-    DiffAndDNSCheck --> SteadyState: IP 未变 & DNS 记录一致 & 未达心跳
-    DiffAndDNSCheck --> ExecuteWebhook: IP 变动 / DNS 不一致 / 达到心跳
+    FetchInterfaceIP --> DiffAndDNSCheck: Resolved IPv4/IPv6
+    DiffAndDNSCheck --> SteadyState: IP unchanged & DNS matches & heartbeat valid
+    DiffAndDNSCheck --> ExecuteWebhook: IP changed / DNS mismatch / heartbeat expired
 
-    ExecuteWebhook --> CheckResult: 执行 HTTP 请求与断言
+    ExecuteWebhook --> CheckResult: Execute HTTP request & assertions
 
-    CheckResult --> SteadyState: Update 成功 (无论 DNS 是否传播完成，均维持 300s)
-    CheckResult --> RetryState: Update 失败 并且 DNS 记录不一致 (故障态，60s 重试)
-    CheckResult --> SteadyState: Update 失败 但 DNS 记录已一致 (维持 300s)
+    CheckResult --> SteadyState: Update succeeded (maintains 300s regardless of DNS TTL)
+    CheckResult --> RetryState: Update failed AND DNS mismatches (failure state, 60s retry)
+    CheckResult --> SteadyState: Update failed BUT DNS matches (maintains 300s)
 ```
 
-#### 3. 结构体与任务扇出设计 (`scheduler/task.rs`)
-* **`TaskRunOutcome`**：单任务执行结果，显式传递 `should_shorten_interval: bool` 与 `error: Option<RdnsError>`。
-* **`InterfaceRunOutcome`**：网卡轮次结果，聚合所有绑定任务的 `should_shorten_interval` 标志。
-* **`InterfaceScheduler::run_loop`**：根据本轮结果动态决定下一周期的 `sleep(next_interval)` 时长。
+#### 3. Execution Structures & Task Fanout (`scheduler/task.rs`)
 
-### 5.6 通用通知系统与状态机不变量 (`notification/`)
+* **`TaskRunOutcome`**: Single-task result carrying `should_shorten_interval: bool` and `error: Option<RdnsError>`.
+* **`InterfaceRunOutcome`**: Aggregates `should_shorten_interval` across all tasks bound to an interface.
+* **`InterfaceScheduler::run_loop`**: Dynamically determines `sleep(next_interval)` duration based on round outcomes.
 
-* **DRY 原则彻底贯彻**：
-  通知服务直接复用 `engine::HttpEngine` 执行外部 Webhook 调用。
-* **通知状态机时序不变量**：
-  * **先 Recovery 后 Change**：在任务执行成功时，优先派发 `NotificationEvent::Recovery`，消费并移除历史失败计数（`guard.remove(task_name).unwrap_or(0) > 0`），使恢复告警 `on_recovery` 能够正确且仅触发一次。
-  * **真实变动守卫 (`ip_actually_changed`)**：仅在实际本地 IP 发生变动时才派发 `NotificationEvent::Change`。当因保活心跳（`force_update_interval`）或云端 DNS 对齐触发更新时，若本地 IP 实际上未改变，抑制 `Change` 事件，消除心跳产生的通知风暴。
-  * **失败计数饱和运算**：失败计数使用 `count.saturating_add(1)`，杜绝长期故障时数值溢出回绕至 0 再次触发“首次失败告警”。
-  * **状态持久化与一致性**：在所有网络通知顺利派发后，调用 `state_store.update` 记录新状态。
-### 5.7 预定义服务商模板体系与 CLI 查询规范 (`provider/`)
+### 5.6 Generic Notification System & Invariants (`notification/`)
 
-为了极大简化主流 DDNS 服务商（如 Dynu, dynv6, DuckDNS, Hurricane Electric, No-IP 等）的配置门槛，系统在保证通用 Webhook 架构纯粹性的同时，引入零性能开销的预定义服务商注册中心：
+* **DRY Implementation**: Notification calls reuse `engine::HttpEngine` for Webhook dispatch.
+* **State Machine Invariants**:
+  * **Recovery Before Change**: Successful updates dispatch `NotificationEvent::Recovery` first, clearing failure counters (`guard.remove(task_name).unwrap_or(0) > 0`) so recovery alerts fire exactly once.
+  * **Actual Change Guard (`ip_actually_changed`)**: `NotificationEvent::Change` is dispatched only if the local IP genuinely changed. Periodic heartbeats (`force_update_interval`) that do not alter the IP suppress `Change` events.
+  * **Saturating Counters**: Failure counters use `count.saturating_add(1)` to avoid integer overflow loops.
+  * **Persistence Ordering**: State updates are committed to `StateStore` after notifications dispatch.
 
-#### 1. 结构体与注册表模型 (`provider/mod.rs`)
+### 5.7 Predefined Provider Templates & CLI Introspection (`provider/`)
+
+To simplify configuration for popular providers (Dynu, dynv6, DuckDNS, Hurricane Electric, No-IP), RDNS includes a zero-overhead provider registry:
+
+#### 1. Provider Model (`provider/mod.rs`)
+
 ```rust
 pub struct Provider {
     pub name: &'static str,
@@ -458,21 +470,23 @@ pub struct Provider {
 }
 ```
 
-#### 2. 自动套用与参数强校验流转
-1. **自动套用默认模板**：在 `validate_config(&mut Config)` 中，若 Task 配置了 `provider` 且未提供 `request`，系统自动克隆该 Provider 的默认 `RequestConfig` 并填入 `task.request`。
-2. **用户覆盖优先**：若用户同时提供了 `provider` 与 `request`，用户自定义的 `request` 拥有更高优先级，支持微调 URL 或额外自定义 Headers。
-3. **参数必填性防御**：核对 `p.requires_domain` 与 `p.required_args`（如 Dynu 检查 `args.password`，dynv6 检查 `args.token`）。若有遗漏，在静态配置校验阶段直接阻断并报出清晰友好的错误，杜绝运行时产生无效请求。
+#### 2. Template Auto-Assembly & Validation
 
-#### 3. 命令行自省与查询指令
-* `rdns --list-providers`：格式化输出所有内置服务商列表、官网、默认 URL 模板与所需参数。
-* `rdns --provider <NAME>`（别名 `--show-provider <NAME>`）：格式化输出指定服务商的模板细节、所需参数说明及可直接复制的 YAML 任务配置范例。
-* **独立免配置运行**：Provider 查询指令在 `main.rs` 顶级直接分发，无需本地存在 `config.yaml`，即开即查。
+1. **Auto-Populating Templates**: In `validate_config(&mut Config)`, if a task specifies a `provider` without a `request`, the provider's default `RequestConfig` is cloned into `task.request`.
+2. **User Overrides**: Explicit `request` fields take precedence over provider defaults, allowing custom headers or URL overrides.
+3. **Mandatory Argument Validation**: Checks `p.requires_domain` and `p.required_args` (e.g., `args.password` for Dynu, `args.token` for dynv6), failing fast during startup if required parameters are missing.
+
+#### 3. CLI Introspection Commands
+
+* `rdns --list-providers`: Formats and lists all built-in providers, websites, templates, and parameters.
+* `rdns --provider <NAME>` (alias `--show-provider <NAME>`): Displays detailed templates, parameter documentation, and copyable YAML examples.
+* **Standalone Execution**: Provider commands run independently without requiring a local `config.yaml`.
 
 ---
 
-## 六、 错误处理与领域模型 (`error.rs`)
+## 6. Error Handling & Domain Model (`error.rs`)
 
-统一基于 `thiserror` 派生强类型、无歧义的错误体系，严格禁止使用通用的字符串错误。
+Derives strongly typed, unambiguous domain errors via `thiserror`:
 
 ```rust
 use thiserror::Error;
@@ -534,22 +548,26 @@ pub enum IpFetchError {
 
 ---
 
-## 七、 编码与工程规范指南
+## 7. Engineering & Coding Standards
 
-### 7.1 Panic 零容忍准则
-* 除单元测试（`#[test]`）外，代码中**严禁出现 `.unwrap()` 与 `.expect()`**。
-* 数组访问、字典查询必须使用安全切片操作（如 `.get()`）结合 `ok_or_else` 或 `if let`。
-* 异步任务中的错误一律通过 `Result<T, E>` 逐级向上收敛并记录到 `tracing::error!`。
+### 7.1 Zero-Panic Policy
 
-### 7.2 锁与原子变量规范
-* 严禁引入 `std::sync::Mutex` 或 `std::sync::RwLock`，若需使用同步锁必须使用 `parking_lot::Mutex` / `parking_lot::RwLock`。
-* 不使用手写循环的 `AtomicBool` 做自旋等待；一律使用 `tokio_util::sync::CancellationToken` 或 `tokio::sync::watch`。
+* `.unwrap()` and `.expect()` are **strictly forbidden** outside unit tests (`#[test]`).
+* Array index and dictionary lookups must use safe accessor methods (`.get()`) with `ok_or_else` or `if let`.
+* Asynchronous task errors must converge through `Result<T, E>` and log to `tracing::error!`.
 
-### 7.3 内存效率与零拷贝建议
-* 模板渲染引擎使用流式写入（`write!` into `String` 缓冲区），预估容量（`reserve`），避免中间产生多次无谓的临时 `String` 分配。
-* 配置反序列化后的静态字符串全面使用引用（`&str`）切片借用，消除多余的 `.clone()`。
+### 7.2 Locks & Atomic Variables
 
-### 7.4 模块可见性防护 (Encapsulation Lockdown)
-* 所有子模块在 `mod.rs` 中一律私有声明（`mod executor;`，严禁 `pub mod executor;`）。
-* 内部工具函数、私有结构体限定可见性为 `pub(crate)` 或 `pub(super)`。
-* 各模块的 `mod.rs` 只向外重新导出调用方真正需要的高层外观对象。
+* Standard library mutexes (`std::sync::Mutex`, `std::sync::RwLock`) are prohibited; use `parking_lot::Mutex` / `parking_lot::RwLock` when synchronization is needed.
+* Avoid spinning on `AtomicBool` loops; use `tokio_util::sync::CancellationToken` or `tokio::sync::watch`.
+
+### 7.3 Memory Efficiency & Zero-Copy Practices
+
+* Template rendering writes directly into pre-allocated string buffers (`write!` with `reserve`).
+* Static configuration strings are borrowed via `&str` slices, eliminating unnecessary `.clone()` allocations.
+
+### 7.4 Module Encapsulation Lockdown
+
+* Submodules in `mod.rs` must be declared privately (`mod executor;`, never `pub mod executor;`).
+* Internal utilities and implementation details use `pub(crate)` or `pub(super)` visibility.
+* Module entries export only essential public facade objects.

@@ -1,13 +1,13 @@
 global:
-  interval: 300            # 全局默认轮询间隔（秒）
-  retry_interval: 60       # Update 失败且 DNS 记录不一致时的快速重试恢复间隔（秒，默认 60）
-  timeout: 10              # HTTP 请求超时（秒）
-  shutdown_timeout: 10     # 优雅停机排空最长等待时间（秒）
-  worker_threads: 2        # Tokio 异步工作线程数（设为 1 则启用极轻量单线程，不设默认自适应 CPU 核心数）
-  log_level: "info"        # trace | debug | info | warn | error
-  # proxy: "http://127.0.0.1:7890" # 可选全局代理 (支持 http / socks5)
+  interval: 300 # Global default polling interval (seconds)
+  retry_interval: 60 # Fast retry recovery interval when update fails and DNS records mismatch (seconds, default 60)
+  timeout: 10 # HTTP request timeout (seconds)
+  shutdown_timeout: 10 # Maximum graceful shutdown wait timeout (seconds)
+  worker_threads: 2 # Tokio worker threads (set to 1 for ultra-lightweight single-thread; omitted defaults to CPU core count)
+  log_level: "info" # trace | debug | info | warn | error | off
+  # proxy: "http://127.0.0.1:7890" # Optional global proxy (supports http / socks5)
 
-# 全局通用通知系统（可选）
+# Generic notification system (optional)
 notification:
   on_change:
     enabled: true
@@ -17,7 +17,7 @@ notification:
       Content-Type: "application/json"
     body: |
       {
-        "title": "RDNS IP 变动通知",
+        "title": "RDNS IP Change Notification",
         "task": "{{task_name}}",
         "old_ip": "{{old_ip}}",
         "new_ip": "{{new_ip}}"
@@ -30,7 +30,7 @@ notification:
       Content-Type: "application/json"
     body: |
       {
-        "title": "RDNS 更新告警",
+        "title": "RDNS Update Failure Alert",
         "task": "{{task_name}}",
         "error": "{{error_message}}"
       }
@@ -38,8 +38,8 @@ notification:
 interfaces:
   - name: "Local"
     interval: 300
-    retry_interval: 60         # 可选单独覆盖：Update 失败且 DNS 记录不一致时的快速重试间隔
-    dns_server: "8.8.8.8"      # 可选 DNS 服务器，用于向远端比对域名实际解析记录（如发现被手动改错自动恢复）
+    retry_interval: 60 # Optional override: fast retry interval when update fails and DNS records mismatch
+    dns_server: "8.8.8.8" # Optional DNS server used to check actual remote DNS records (auto-recovers if cloud record is drifted)
     ipv4:
       enabled: true
       source: "remote"
@@ -51,20 +51,20 @@ interfaces:
     ipv6:
       enabled: true
       source: "interface"
-      interface: "Local"       # 网卡名称 (Windows 为适配器友好名称，Linux 为 eth0 等)
-      prefer_slaac: true       # 优先识别并选取稳定无状态自动配置 (EUI-64 SLAAC) IPv6 地址
+      interface: "Local" # Network interface name (friendly name on Windows, eth0 on Linux, etc.)
+      prefer_slaac: true # Prioritize identifying and selecting stable SLAAC (EUI-64) IPv6 addresses
 
 tasks:
-  # 任务 1：Dynu 双栈原子更新（使用预定义 provider: dynu 与 args 命名参数）
+  # Task 1: Dynu dual-stack atomic update (using predefined provider: dynu and named args)
   - name: "dynu-office-dualstack"
-    # interface: "Local"       # 可选，未配置则默认取第一个 interface
-    domain: "wox-office.freeddns.org" # 配置对应域名后，每次轮询会自动比对远端 DNS 解析，不一致立即触发纠错更新
-    force_update_interval: 86400 # 针对该任务的心跳强制保活周期（秒）
-    provider: "dynu"           # 内置预定义服务商模板，可使用 `rdns --provider dynu` 查询模板详情
+    # interface: "Local"       # Optional; defaults to the first interface if omitted
+    domain: "wox-office.freeddns.org" # Checks remote DNS resolution every cycle; triggers corrective update on mismatch
+    force_update_interval: 86400 # Heartbeat keepalive interval for this task (seconds)
+    provider: "dynu" # Built-in provider template; query details with `rdns --provider dynu`
     args:
-      password: "${DYNU_PASSWORD:-YOUR_UPDATE_PASSWORD}" # 支持环境变量展开，自动注入为 {{password}}
+      password: "${DYNU_PASSWORD:-YOUR_UPDATE_PASSWORD}" # Supports environment variable expansion, injected as {{password}}
 
-  # 任务 2：另一个独立的纯 IPv6 更新示例（使用自定义 request 与 args 命名参数）
+  # Task 2: Standalone IPv6 update example (using custom request and named args)
   - name: "custom-v6-webhook"
     interface: "Local"
     domain: "home.example.com"
@@ -84,5 +84,3 @@ tasks:
         }
       success_contains:
         - '"status":"success"'
-
-
