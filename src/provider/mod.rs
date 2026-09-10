@@ -68,7 +68,7 @@ pub static PROVIDERS: &[Provider] = &[
         required_args: &["password"],
         optional_args: &["username"],
         default_method: "GET",
-        default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myip={{ipv4}}&password={{password}}",
+        default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myip={{ipv4}}&myipv6=no&password={{password}}",
         default_success_regex: Some("^(good|nochg)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "dynu-v4"
@@ -86,7 +86,7 @@ pub static PROVIDERS: &[Provider] = &[
         required_args: &["password"],
         optional_args: &["username"],
         default_method: "GET",
-        default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myipv6={{ipv6}}&password={{password}}",
+        default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myip=no&myipv6={{ipv6}}&password={{password}}",
         default_success_regex: Some("^(good|nochg)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "dynu-v6"
