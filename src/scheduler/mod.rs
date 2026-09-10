@@ -34,7 +34,13 @@ impl SchedulerService {
 
         // Group tasks by interface name.
         // If task does not specify an interface, default to the first interface in config.interfaces.
-        let default_iface_name = &config.interfaces[0].name;
+        let default_iface_name = config
+            .interfaces
+            .first()
+            .map(|i| i.name.as_str())
+            .ok_or_else(|| {
+                RdnsError::Assertion("Configuration contains no network interfaces".to_string())
+            })?;
         let mut tasks_by_iface: HashMap<String, Vec<Arc<TaskExecutor>>> = HashMap::new();
         let dns_resolver = crate::ip::DnsResolver::new();
 

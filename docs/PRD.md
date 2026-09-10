@@ -125,9 +125,11 @@
 #### 5\. 通用通知系统 (Generic Notification)
 
 *   统一抽象为基于通用 Webhook 的通知系统，支持在全局或任务级别配置：
-    *   **触发事件**：`on_change`（IP 变更成功时）、`on_failure`（更新失败时）、`on_recovery`（从连续失败中恢复时）。
+    *   **触发事件**：`on_change`（IP 真实变动并更新成功时）、`on_failure`（更新失败时）、`on_recovery`（从连续失败中恢复成功时）。
+    *   **通知时序与状态机不变量**：成功更新时优先派发 `Recovery` 消费并清理历史失败计数，触发 `on_recovery` 告警恢复；紧接着根据真实 IP 是否变动（`ip_actually_changed`）决定是否触发 `on_change`。
+    *   **心跳与保活去噪**：当因定期心跳（`force_update_interval`）或云端 DNS 记录核对触发强制更新时，若实际 IP 未发生改变，**抑制 `on_change` 事件**，彻底杜绝心跳周期产生的通知风暴。
+    *   **告警防刷与饱和保护**：内置连续失败降噪机制（仅首次失败触发告警），失败计数采用饱和递增（Saturating Add），防止长期断网数值溢出回绕重复告警。
     *   **通知占位符**：支持 `{{task_name}}`、`{{status}}`、`{{old_ip}}`、`{{new_ip}}`、`{{error_message}}`、`{{timestamp}}`。
-    *   **告警防刷**：内置连续失败降噪机制（仅首次失败触发告警或按指数退避发送），防止断网期间告警轰炸。
     
 
 #### 6\. 跨平台优雅停机与生命周期管理 (Graceful Shutdown & Lifecycle)

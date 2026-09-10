@@ -40,6 +40,35 @@ pub struct Cli {
     pub show_provider: Option<String>,
 
     /// Number of Tokio runtime worker threads (1 for single-thread lightweight runtime)
-    #[arg(short = 't', long = "worker-threads")]
+    #[arg(short = 't', long = "worker-threads", value_parser = parse_worker_threads)]
     pub worker_threads: Option<usize>,
+}
+
+fn parse_worker_threads(s: &str) -> Result<usize, String> {
+    let val: usize = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
+    if val == 0 {
+        return Err("worker threads must be greater than 0".to_string());
+    }
+    Ok(val)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_worker_threads_zero_fails_cli_parsing() {
+        let res = Cli::try_parse_from(["rdns", "-t", "0"]);
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("worker threads must be greater than 0"));
+    }
+
+    #[test]
+    fn test_worker_threads_positive_succeeds() {
+        let cli = Cli::try_parse_from(["rdns", "-t", "4"]).unwrap();
+        assert_eq!(cli.worker_threads, Some(4));
+    }
 }

@@ -190,7 +190,7 @@ fn default_method() -> String {
 }
 
 /// Generic notification settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NotificationConfig {
     pub on_change: Option<WebhookHookConfig>,
     pub on_failure: Option<WebhookHookConfig>,

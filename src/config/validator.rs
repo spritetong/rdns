@@ -37,6 +37,27 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
         });
     }
 
+    if config.global.timeout == 0 {
+        return Err(ConfigError::Validation {
+            field: "global.timeout".to_string(),
+            message: "Timeout must be greater than 0".to_string(),
+        });
+    }
+
+    if config.global.shutdown_timeout == 0 {
+        return Err(ConfigError::Validation {
+            field: "global.shutdown_timeout".to_string(),
+            message: "Shutdown timeout must be greater than 0".to_string(),
+        });
+    }
+
+    if config.global.worker_threads == Some(0) {
+        return Err(ConfigError::Validation {
+            field: "global.worker_threads".to_string(),
+            message: "Worker threads must be greater than 0".to_string(),
+        });
+    }
+
     if let Some(ref dns) = config.global.dns_server {
         validate_dns_server(dns, "global.dns_server")?;
     }
@@ -164,6 +185,13 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
             return Err(ConfigError::Validation {
                 field: "tasks[].name".to_string(),
                 message: format!("Duplicate task name '{}' found", task.name),
+            });
+        }
+
+        if task.force_update_interval == Some(0) {
+            return Err(ConfigError::Validation {
+                field: format!("tasks[{}].force_update_interval", task.name),
+                message: "Force update interval must be greater than 0".to_string(),
             });
         }
 
@@ -437,6 +465,208 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("must specify either 'provider' or 'request'")
+        );
+    }
+
+    #[test]
+    fn test_zero_timeout_rejected() {
+        let mut config = Config {
+            global: GlobalConfig {
+                timeout: 0,
+                ..Default::default()
+            },
+            interfaces: vec![InterfaceConfig {
+                name: "test".to_string(),
+                interval: Some(300),
+                retry_interval: None,
+                dns_server: None,
+                ipv4: Some(IpStrategyConfig {
+                    enabled: true,
+                    source: "remote".to_string(),
+                    urls: vec!["http://127.0.0.1".to_string()],
+                    interface: None,
+                    ipv6_prefix: None,
+                    prefer_slaac: false,
+                    ipv6_regex: None,
+                    allow_private: false,
+                }),
+                ipv6: None,
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(RequestConfig {
+                    method: "GET".to_string(),
+                    url: "http://127.0.0.1".to_string(),
+                    headers: Default::default(),
+                    body: None,
+                    tls_insecure: false,
+                    proxy: None,
+                    success_contains: vec![],
+                    success_regex: None,
+                }),
+            }],
+        };
+
+        let err = validate_config(&mut config).unwrap_err();
+        assert!(err.to_string().contains("Timeout must be greater than 0"));
+    }
+
+    #[test]
+    fn test_zero_shutdown_timeout_rejected() {
+        let mut config = Config {
+            global: GlobalConfig {
+                shutdown_timeout: 0,
+                ..Default::default()
+            },
+            interfaces: vec![InterfaceConfig {
+                name: "test".to_string(),
+                interval: Some(300),
+                retry_interval: None,
+                dns_server: None,
+                ipv4: Some(IpStrategyConfig {
+                    enabled: true,
+                    source: "remote".to_string(),
+                    urls: vec!["http://127.0.0.1".to_string()],
+                    interface: None,
+                    ipv6_prefix: None,
+                    prefer_slaac: false,
+                    ipv6_regex: None,
+                    allow_private: false,
+                }),
+                ipv6: None,
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(RequestConfig {
+                    method: "GET".to_string(),
+                    url: "http://127.0.0.1".to_string(),
+                    headers: Default::default(),
+                    body: None,
+                    tls_insecure: false,
+                    proxy: None,
+                    success_contains: vec![],
+                    success_regex: None,
+                }),
+            }],
+        };
+
+        let err = validate_config(&mut config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Shutdown timeout must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn test_zero_worker_threads_rejected() {
+        let mut config = Config {
+            global: GlobalConfig {
+                worker_threads: Some(0),
+                ..Default::default()
+            },
+            interfaces: vec![InterfaceConfig {
+                name: "test".to_string(),
+                interval: Some(300),
+                retry_interval: None,
+                dns_server: None,
+                ipv4: Some(IpStrategyConfig {
+                    enabled: true,
+                    source: "remote".to_string(),
+                    urls: vec!["http://127.0.0.1".to_string()],
+                    interface: None,
+                    ipv6_prefix: None,
+                    prefer_slaac: false,
+                    ipv6_regex: None,
+                    allow_private: false,
+                }),
+                ipv6: None,
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(RequestConfig {
+                    method: "GET".to_string(),
+                    url: "http://127.0.0.1".to_string(),
+                    headers: Default::default(),
+                    body: None,
+                    tls_insecure: false,
+                    proxy: None,
+                    success_contains: vec![],
+                    success_regex: None,
+                }),
+            }],
+        };
+
+        let err = validate_config(&mut config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Worker threads must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn test_zero_force_update_interval_rejected() {
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "test".to_string(),
+                interval: Some(300),
+                retry_interval: None,
+                dns_server: None,
+                ipv4: Some(IpStrategyConfig {
+                    enabled: true,
+                    source: "remote".to_string(),
+                    urls: vec!["http://127.0.0.1".to_string()],
+                    interface: None,
+                    ipv6_prefix: None,
+                    prefer_slaac: false,
+                    ipv6_regex: None,
+                    allow_private: false,
+                }),
+                ipv6: None,
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: Some(0),
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(RequestConfig {
+                    method: "GET".to_string(),
+                    url: "http://127.0.0.1".to_string(),
+                    headers: Default::default(),
+                    body: None,
+                    tls_insecure: false,
+                    proxy: None,
+                    success_contains: vec![],
+                    success_regex: None,
+                }),
+            }],
+        };
+
+        let err = validate_config(&mut config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Force update interval must be greater than 0")
         );
     }
 }

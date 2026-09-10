@@ -6,19 +6,64 @@ use crate::engine::verifier::ResponseVerifier;
 use crate::error::RdnsError;
 use reqwest::Method;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::time::Duration;
+
+pub const MAX_RESP_BODY_SIZE: usize = 1024 * 1024; // 1 MiB
 
 pub struct RequestExecutor {
-    client: reqwest::Client,
+    default_client: reqwest::Client,
+    timeout: Duration,
+    custom_clients: parking_lot::RwLock<HashMap<(Option<String>, bool), reqwest::Client>>,
 }
 
 impl RequestExecutor {
-    pub fn new(client: reqwest::Client) -> Self {
-        Self { client }
+    pub fn new(client: reqwest::Client, timeout: Duration) -> Self {
+        Self {
+            default_client: client,
+            timeout,
+            custom_clients: parking_lot::RwLock::new(HashMap::new()),
+        }
     }
 
     pub fn client(&self) -> &reqwest::Client {
-        &self.client
+        &self.default_client
+    }
+
+    fn get_or_create_custom_client(
+        &self,
+        task_name: &str,
+        req_cfg: &RequestConfig,
+    ) -> Result<reqwest::Client, RdnsError> {
+        let key = (req_cfg.proxy.clone(), req_cfg.tls_insecure);
+        {
+            let read_guard = self.custom_clients.read();
+            if let Some(client) = read_guard.get(&key) {
+                return Ok(client.clone());
+            }
+        }
+
+        let mut write_guard = self.custom_clients.write();
+        if let Some(client) = write_guard.get(&key) {
+            return Ok(client.clone());
+        }
+
+        if req_cfg.tls_insecure {
+            tracing::warn!(
+                task = %task_name,
+                "Task configured with tls_insecure: true. TLS certificate verification is DISABLED."
+            );
+        }
+
+        let client = crate::engine::build_http_client(
+            self.timeout,
+            req_cfg.proxy.as_deref(),
+            req_cfg.tls_insecure,
+        )?;
+
+        write_guard.insert(key, client.clone());
+        Ok(client)
     }
 
     pub async fn execute(
@@ -59,7 +104,7 @@ impl RequestExecutor {
             println!("Headers:");
             for (k, v) in &headers {
                 let val_str = v.to_str().unwrap_or("<binary>");
-                let masked_val = if k.as_str().eq_ignore_ascii_case("authorization") {
+                let masked_val = if is_sensitive_header(k.as_str()) {
                     mask_secret(val_str)
                 } else {
                     val_str.to_string()
@@ -75,16 +120,29 @@ impl RequestExecutor {
             if !req_cfg.success_contains.is_empty() {
                 println!("Assertion Contains: {:?}", req_cfg.success_contains);
             }
+            if req_cfg.tls_insecure {
+                println!("TLS Insecure:       true (CERTIFICATE VALIDATION DISABLED)");
+            }
+            if let Some(ref p) = req_cfg.proxy {
+                println!("Proxy:              {}", p);
+            }
             println!("================================================\n");
             return Ok(());
         }
 
-        // 5. Execute Live Request
+        // 5. Select appropriate HTTP client (cached by proxy/tls_insecure config)
+        let client = if !req_cfg.tls_insecure && req_cfg.proxy.is_none() {
+            self.default_client.clone()
+        } else {
+            self.get_or_create_custom_client(task_name, req_cfg)?
+        };
+
+        // 6. Execute Live Request
         let method = Method::from_str(&req_cfg.method.to_uppercase()).map_err(|e| {
             RdnsError::Assertion(format!("Invalid HTTP method '{}': {}", req_cfg.method, e))
         })?;
 
-        let mut req = self.client.request(method, &rendered_url).headers(headers);
+        let mut req = client.request(method, &rendered_url).headers(headers);
 
         if let Some(ref body) = rendered_body {
             req = req.body(body.clone());
@@ -92,9 +150,9 @@ impl RequestExecutor {
 
         let resp = req.send().await?;
         let status = resp.status();
-        let resp_body = resp.text().await.unwrap_or_default();
+        let resp_body = read_bounded_text(resp, MAX_RESP_BODY_SIZE).await?;
 
-        // 6. Verify Response
+        // 7. Verify Response
         let verifier =
             ResponseVerifier::new(req_cfg.success_regex.as_deref(), &req_cfg.success_contains)?;
         verifier.verify(status, &resp_body)?;
@@ -109,13 +167,41 @@ impl RequestExecutor {
     }
 }
 
+pub async fn read_bounded_text(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String, RdnsError> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(RdnsError::Http)? {
+        if buf.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(RdnsError::Assertion(format!(
+                "Response body size exceeded maximum limit of {} bytes",
+                max_bytes
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf)
+        .map_err(|e| RdnsError::Assertion(format!("Response body is not valid UTF-8: {}", e)))
+}
+
+fn is_sensitive_header(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n == "authorization"
+        || n.contains("token")
+        || n.contains("secret")
+        || n.contains("password")
+        || n.contains("key")
+        || n.contains("auth")
+}
+
 fn mask_sensitive_params(url: &str) -> String {
     let sensitive_keys = ["password", "token", "secret", "key", "pass", "auth"];
     let mut masked = url.to_string();
     for key in sensitive_keys {
         let pattern = format!("{}=", key);
         let mut search_from = 0;
-        while let Some(pos) = masked[search_from..].to_lowercase().find(&pattern) {
+        while let Some(pos) = find_key_ci(&masked[search_from..], &pattern) {
             let actual_pos = search_from + pos + pattern.len();
             let end_pos = masked[actual_pos..]
                 .find('&')
@@ -130,10 +216,130 @@ fn mask_sensitive_params(url: &str) -> String {
     masked
 }
 
+/// Find an ASCII-case-insensitive key in the original byte coordinate space.
+/// Does not mutate the haystack or change UTF-8 character byte lengths.
+fn find_key_ci(haystack: &str, key: &str) -> Option<usize> {
+    let (hb, kb) = (haystack.as_bytes(), key.as_bytes());
+    if kb.is_empty() || hb.len() < kb.len() {
+        return None;
+    }
+    (0..=hb.len() - kb.len()).find(|&i| {
+        kb.iter()
+            .zip(&hb[i..])
+            .all(|(k, h)| k.eq_ignore_ascii_case(h))
+    })
+}
+
 fn mask_secret(val: &str) -> String {
-    if val.len() <= 4 {
+    let char_count = val.chars().count();
+    if char_count <= 4 {
         "****".to_string()
     } else {
-        format!("{}****", &val[..2])
+        let prefix_bytes = val
+            .char_indices()
+            .nth(2)
+            .map(|(idx, _)| idx)
+            .unwrap_or(val.len());
+        format!("{}****", &val[..prefix_bytes])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mask_secret_ascii_and_unicode() {
+        // <= 4 chars returns "****"
+        assert_eq!(mask_secret(""), "****");
+        assert_eq!(mask_secret("abc"), "****");
+        assert_eq!(mask_secret("abcd"), "****");
+        assert_eq!(mask_secret("密码"), "****");
+        assert_eq!(mask_secret("🔑🦀👍"), "****");
+
+        // > 4 chars preserves first 2 Unicode characters, not bytes
+        assert_eq!(mask_secret("abcdef"), "ab****");
+        assert_eq!(mask_secret("密码保护123"), "密码****");
+        assert_eq!(mask_secret("€12345"), "€1****");
+        assert_eq!(mask_secret("🔑🦀rocket"), "🔑🦀****");
+    }
+
+    #[test]
+    fn test_mask_sensitive_params_unicode_and_case() {
+        let url =
+            "https://example.com/api?user=admin&PASSWORD=€12345&TOKEN=中文密码999&other=normal";
+        let masked = mask_sensitive_params(url);
+        assert!(masked.contains("PASSWORD=€1****"));
+        assert!(masked.contains("TOKEN=中文****"));
+        assert!(masked.contains("other=normal"));
+
+        // Special Unicode casing test: ensure non-ASCII characters in URL don't cause index mismatch
+        let url2 = "https://example.com/api?domain=münchen.de&key=secret123&foo=bar";
+        let masked2 = mask_sensitive_params(url2);
+        assert_eq!(
+            masked2,
+            "https://example.com/api?domain=münchen.de&key=se****&foo=bar"
+        );
+    }
+
+    #[test]
+    fn test_is_sensitive_header() {
+        assert!(is_sensitive_header("Authorization"));
+        assert!(is_sensitive_header("X-Api-Key"));
+        assert!(is_sensitive_header("X-Auth-Token"));
+        assert!(is_sensitive_header("Client-Secret"));
+        assert!(!is_sensitive_header("Content-Type"));
+        assert!(!is_sensitive_header("User-Agent"));
+    }
+
+    #[tokio::test]
+    async fn test_read_bounded_text_overflow() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let response = "HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n01234567890123456789";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("http://{}", addr)).send().await.unwrap();
+        // Limit to 10 bytes: response body has 20 bytes -> must return RdnsError::Assertion
+        let res = read_bounded_text(resp, 10).await;
+        assert!(res.is_err());
+        assert!(
+            res.unwrap_err()
+                .to_string()
+                .contains("exceeded maximum limit")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_bounded_text_success() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let response =
+                    "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let client = reqwest::Client::new();
+        let resp = client.get(format!("http://{}", addr)).send().await.unwrap();
+        let res = read_bounded_text(resp, 100).await.unwrap();
+        assert_eq!(res, "hello");
     }
 }

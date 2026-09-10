@@ -42,7 +42,7 @@ impl NotificationDispatcher {
                 new_ip,
             } => {
                 // Reset failure count on change
-                self.failure_counts.lock().insert(task_name.to_string(), 0);
+                self.failure_counts.lock().remove(task_name);
 
                 if let Some(ref hook) = cfg.on_change
                     && hook.enabled
@@ -62,7 +62,7 @@ impl NotificationDispatcher {
                 let is_first_failure = {
                     let mut guard = self.failure_counts.lock();
                     let count = guard.entry(task_name.to_string()).or_insert(0);
-                    *count += 1;
+                    *count = count.saturating_add(1);
                     *count == 1
                 };
 
@@ -84,7 +84,7 @@ impl NotificationDispatcher {
             } => {
                 let had_previous_failures = {
                     let mut guard = self.failure_counts.lock();
-                    guard.insert(task_name.to_string(), 0).unwrap_or(0) > 0
+                    guard.remove(task_name).unwrap_or(0) > 0
                 };
 
                 if had_previous_failures
@@ -156,5 +156,88 @@ impl NotificationDispatcher {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::GlobalConfig;
+
+    #[tokio::test]
+    async fn test_failure_recovery_lifecycle() {
+        let global = GlobalConfig::default();
+        let engine = HttpEngine::new(&global).unwrap();
+        let dispatcher = NotificationDispatcher::new(Some(NotificationConfig::default()), engine);
+
+        // 1. Initial state: 0 failures
+        assert_eq!(dispatcher.failure_counts.lock().get("task1"), None);
+
+        // 2. First failure
+        dispatcher
+            .dispatch(NotificationEvent::Failure {
+                task_name: "task1",
+                error_message: "timeout",
+            })
+            .await;
+        assert_eq!(
+            dispatcher.failure_counts.lock().get("task1").copied(),
+            Some(1)
+        );
+
+        // 3. Second failure: count increments
+        dispatcher
+            .dispatch(NotificationEvent::Failure {
+                task_name: "task1",
+                error_message: "timeout again",
+            })
+            .await;
+        assert_eq!(
+            dispatcher.failure_counts.lock().get("task1").copied(),
+            Some(2)
+        );
+
+        // 4. Recovery: consumes previous failure count (> 0) and removes the key
+        dispatcher
+            .dispatch(NotificationEvent::Recovery {
+                task_name: "task1",
+                current_ip: "1.2.3.4",
+            })
+            .await;
+        assert_eq!(dispatcher.failure_counts.lock().get("task1"), None);
+
+        // 5. Subsequent recovery with no failures: does not trigger recovery again
+        dispatcher
+            .dispatch(NotificationEvent::Recovery {
+                task_name: "task1",
+                current_ip: "1.2.3.4",
+            })
+            .await;
+        assert_eq!(dispatcher.failure_counts.lock().get("task1"), None);
+    }
+
+    #[tokio::test]
+    async fn test_failure_counter_saturating_add() {
+        let global = GlobalConfig::default();
+        let engine = HttpEngine::new(&global).unwrap();
+        let dispatcher = NotificationDispatcher::new(Some(NotificationConfig::default()), engine);
+
+        // Seed with u32::MAX
+        dispatcher
+            .failure_counts
+            .lock()
+            .insert("task_max".to_string(), u32::MAX);
+
+        // Dispatch failure: must saturate at u32::MAX and not wrap around to 0
+        dispatcher
+            .dispatch(NotificationEvent::Failure {
+                task_name: "task_max",
+                error_message: "fail",
+            })
+            .await;
+        assert_eq!(
+            dispatcher.failure_counts.lock().get("task_max").copied(),
+            Some(u32::MAX)
+        );
     }
 }

@@ -334,12 +334,15 @@ pub trait IpFetcher: Send + Sync {
 
 ### 5.4 自定义请求引擎与 TLS 规范 (`engine/`)
 
-#### 1. 客户端单例与连接池 (`engine/client.rs`)
-* 整个进程维护唯一的底层 `reqwest::Client` 实例，内建连接池，避免频繁进行 TCP/TLS 握手。
+#### 1. 客户端单例与任务级连接池 (`engine/client.rs` & `engine/executor.rs`)
+* 全局默认维护唯一的底层 `reqwest::Client` 实例，内建连接池，避免频繁进行 TCP/TLS 握手。
+* **任务级独立连接池 (`(Option<proxy>, tls_insecure)`)**：
+  * `RequestExecutor` 维护默认客户端以及基于 `parking_lot::RwLock<HashMap<(Option<String>, bool), reqwest::Client>>` 的自定义客户端连接池。
+  * 当任务配置了 `tls_insecure: true` 或专用 `proxy` 时，按需构建或复用对应的自定义 Client，杜绝任务级 TLS/代理配置被全局客户端忽略。
+  * 若启用 `tls_insecure: true`，在控制台和日志中输出安全性警示：
+    `tracing::warn!(task = %task_name, "Task configured with tls_insecure: true. TLS certificate verification is DISABLED.");`。
 * **TLS 规范**：
   * 使用 `rustls-tls-native-roots`。在初始化构建 Client 时，自动调用系统证书装载接口（加载 Windows 根证书存储库、macOS Keychain、Linux 系统 CA 目录）。
-  * 若配置了 `tls_insecure: true`，设置 `.danger_accept_invalid_certs(true)`。
-  * 若配置了 `proxy`，统一装载为 `reqwest::Proxy`。
 
 #### 2. 安全模板变量替换与命名参数扩展 (`engine/template.rs`)
 * 模板渲染接收结构体上下文，统一支持内置插槽与自定义命名参数：
@@ -359,14 +362,20 @@ pub trait IpFetcher: Send + Sync {
 * **安全替换断言**：
   在执行替换时，若模板中引用了上下文中缺失的插槽（如未获取到 IPv4 却使用了 `{{ipv4}}`，或 `args` 中未提供 `password`），立即中断并返回强类型错误 `TemplateError::MissingSlot`，严禁将包含明文 `{{...}}` 的错误 URL 发往服务商。
 
-#### 3. 演练模式拦截与敏感脱敏 (`engine/executor.rs`)
+#### 3. 有界流式响应体读取与 DoS 防御
+* **DDNS 响应体上限 (1 MiB)**：
+  通过 `read_bounded_text` 配合 `resp.chunk().await` 限制最大读取字节数为 `MAX_RESP_BODY_SIZE = 1024 * 1024`。超过上限立即熔断抛出 `RdnsError::Assertion`，防止异常或恶意上游无休止推送数据导致内存溢出（OOM）。
+* **远程 IP 探测响应体上限 (4 KiB)**：
+  通过 `read_ip_text` 限制远程 IP 探测响应不超过 4096 字节。
+
+#### 4. 演练模式拦截与 Unicode 字符边界安全脱敏 (`engine/executor.rs`)
 * 当 CLI 传入 `--dry-run` 时：
   * 依然完整执行 IP 探测与模板渲染；
   * `Executor` 拦截实际的网络发送逻辑，在控制台通过结构化格式输出即将发送的 HTTP 请求：
-    * Method、URL
-    * Headers（自动对 `Authorization`、`Token`、`Password` 等敏感键执行脱敏掩码，如 `Bearer secr****`，URL 中的查询参数亦自动执行 `mask_sensitive_params`）
-    * Body
-    * 断言规则预览
+    * Method、URL、Body、断言规则预览
+    * **广谱敏感 Headers 脱敏**：覆盖名称包含 `authorization`、`token`、`secret`、`password`、`key`、`auth` 的所有头字段。
+    * **Unicode 边界保护 (`mask_secret`)**：使用 `char_indices().nth(2)` 定位前 2 个 Unicode 字符的字节边界，彻底杜绝在多字节 UTF-8 字符（如中文、欧元符号 `€`、Emoji 等）内部切片引发的 Panic。
+    * **原串字节坐标大小写无关定位 (`find_key_ci`)**：直接在原串字节切片上匹配敏感查询键（如 `password=`），杜绝全局 `to_lowercase()` 改变多字节长度所导致的偏移错位。
   * 直接模拟返回虚拟成功结果，便于调试。
 
 ### 5.5 调度器与状态自适应双速轮询状态机 (`scheduler/`)
@@ -411,10 +420,15 @@ stateDiagram-v2
 * **`InterfaceRunOutcome`**：网卡轮次结果，聚合所有绑定任务的 `should_shorten_interval` 标志。
 * **`InterfaceScheduler::run_loop`**：根据本轮结果动态决定下一周期的 `sleep(next_interval)` 时长。
 
-### 5.6 通用通知系统 (`notification/`)
+### 5.6 通用通知系统与状态机不变量 (`notification/`)
 
 * **DRY 原则彻底贯彻**：
   通知服务直接复用 `engine::HttpEngine` 执行外部 Webhook 调用。
+* **通知状态机时序不变量**：
+  * **先 Recovery 后 Change**：在任务执行成功时，优先派发 `NotificationEvent::Recovery`，消费并移除历史失败计数（`guard.remove(task_name).unwrap_or(0) > 0`），使恢复告警 `on_recovery` 能够正确且仅触发一次。
+  * **真实变动守卫 (`ip_actually_changed`)**：仅在实际本地 IP 发生变动时才派发 `NotificationEvent::Change`。当因保活心跳（`force_update_interval`）或云端 DNS 对齐触发更新时，若本地 IP 实际上未改变，抑制 `Change` 事件，消除心跳产生的通知风暴。
+  * **失败计数饱和运算**：失败计数使用 `count.saturating_add(1)`，杜绝长期故障时数值溢出回绕至 0 再次触发“首次失败告警”。
+  * **状态持久化与一致性**：在所有网络通知顺利派发后，调用 `state_store.update` 记录新状态。
 ### 5.7 预定义服务商模板体系与 CLI 查询规范 (`provider/`)
 
 为了极大简化主流 DDNS 服务商（如 Dynu, dynv6, DuckDNS, Hurricane Electric, No-IP 等）的配置门槛，系统在保证通用 Webhook 架构纯粹性的同时，引入零性能开销的预定义服务商注册中心：

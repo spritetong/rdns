@@ -100,6 +100,10 @@ fn main() -> ExitCode {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     builder.enable_all();
     if let Some(threads) = worker_threads {
+        if threads == 0 {
+            eprintln!("Worker threads must be greater than 0");
+            return ExitCode::FAILURE;
+        }
         tracing::info!(
             worker_threads = threads,
             "Configuring custom worker threads count"

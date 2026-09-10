@@ -186,23 +186,10 @@ impl TaskExecutor {
         {
             Ok(()) => {
                 if !self.ctx.dry_run {
-                    // Update state store
-                    self.ctx
-                        .state_store
-                        .update(task_name, v4_str.clone(), v6_str.clone(), now);
-
-                    // Dispatch notification
                     let old_ip = format!("v4: {:?}, v6: {:?}", cached.ipv4, cached.ipv6);
                     let new_ip = format!("v4: {:?}, v6: {:?}", v4_str, v6_str);
-                    self.ctx
-                        .notifier
-                        .dispatch(NotificationEvent::Change {
-                            task_name,
-                            old_ip: &old_ip,
-                            new_ip: &new_ip,
-                        })
-                        .await;
 
+                    // 1. Dispatch Recovery first: checks and resets failure count
                     self.ctx
                         .notifier
                         .dispatch(NotificationEvent::Recovery {
@@ -210,6 +197,24 @@ impl TaskExecutor {
                             current_ip: &new_ip,
                         })
                         .await;
+
+                    // 2. Dispatch Change ONLY if IP actually changed (suppress heartbeat notification storms)
+                    let ip_actually_changed = v4_str != cached.ipv4 || v6_str != cached.ipv6;
+                    if ip_actually_changed {
+                        self.ctx
+                            .notifier
+                            .dispatch(NotificationEvent::Change {
+                                task_name,
+                                old_ip: &old_ip,
+                                new_ip: &new_ip,
+                            })
+                            .await;
+                    }
+
+                    // 3. Update state store
+                    self.ctx
+                        .state_store
+                        .update(task_name, v4_str.clone(), v6_str.clone(), now);
                 }
                 // Update succeeded: do NOT shorten interval (DNS propagation delay is expected)
                 TaskRunOutcome {
@@ -604,6 +609,87 @@ mod tests {
             .await;
 
         assert!(outcome.error.is_none(), "Dry-run with args should succeed");
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_force_update_unchanged_ip_recovers_and_suppresses_change() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let response =
+                    "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ngood";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        let tmp_dir =
+            std::env::temp_dir().join(format!("rdns_test_suppress_{}", std::process::id()));
+        let state_path = tmp_dir.join("state.json");
+        let state_store = StateStore::new(&state_path);
+
+        // Pre-populate state_store with current IP and old timestamp to trigger force update
+        let ip_v4 = "192.168.1.100".to_string();
+        state_store.update("test-heartbeat", Some(ip_v4.clone()), None, 100);
+
+        let global = crate::config::GlobalConfig::default();
+        let engine = HttpEngine::new(&global).unwrap();
+        let notifier = NotificationDispatcher::new(
+            Some(crate::config::NotificationConfig::default()),
+            engine.clone(),
+        );
+        let dns_resolver = DnsResolver::new();
+
+        // Seed a failure
+        notifier
+            .dispatch(NotificationEvent::Failure {
+                task_name: "test-heartbeat",
+                error_message: "simulated failure",
+            })
+            .await;
+
+        let ctx = TaskContext {
+            engine,
+            state_store: state_store.clone(),
+            notifier: notifier.clone(),
+            dns_resolver,
+            dns_server: None,
+            timeout: Duration::from_millis(500),
+            dry_run: false,
+        };
+
+        let task_cfg = TaskConfig {
+            name: "test-heartbeat".to_string(),
+            interface: None,
+            force_update_interval: Some(10), // Triggers force update
+            domain: None,
+            provider: None,
+            args: HashMap::new(),
+            request: Some(RequestConfig {
+                method: "GET".to_string(),
+                url: format!("http://{}/update", addr),
+                headers: HashMap::new(),
+                body: None,
+                success_regex: None,
+                success_contains: vec!["good".to_string()],
+                tls_insecure: false,
+                proxy: None,
+            }),
+        };
+
+        let executor = TaskExecutor::new(task_cfg, ctx);
+        let outcome = executor
+            .execute_with_ip(Some("192.168.1.100".parse().unwrap()), None)
+            .await;
+
+        assert!(outcome.error.is_none(), "Heartbeat update should succeed");
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }

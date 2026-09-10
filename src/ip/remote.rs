@@ -50,7 +50,7 @@ impl RemoteIpFetcher {
 
             if let Ok(resp) = resp
                 && resp.status().is_success()
-                && let Ok(text) = resp.text().await
+                && let Some(text) = read_ip_text(resp).await
                 && let Ok(ip) = text.trim().parse::<Ipv4Addr>()
             {
                 return Ok(ip);
@@ -73,7 +73,7 @@ impl RemoteIpFetcher {
 
             if let Ok(resp) = resp
                 && resp.status().is_success()
-                && let Ok(text) = resp.text().await
+                && let Some(text) = read_ip_text(resp).await
                 && let Ok(ip) = text.trim().parse::<Ipv6Addr>()
             {
                 return Ok(ip);
@@ -85,4 +85,17 @@ impl RemoteIpFetcher {
         }
         Err(IpFetchError::AllSourcesExhausted)
     }
+}
+
+const MAX_IP_RESP_BYTES: usize = 4096;
+
+async fn read_ip_text(mut resp: reqwest::Response) -> Option<String> {
+    let mut buf = Vec::new();
+    while let Ok(Some(chunk)) = resp.chunk().await {
+        if buf.len().saturating_add(chunk.len()) > MAX_IP_RESP_BYTES {
+            return None;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).ok()
 }

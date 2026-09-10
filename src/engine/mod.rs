@@ -24,7 +24,7 @@ impl HttpEngine {
         let timeout = Duration::from_secs(global.timeout);
         let client = build_http_client(timeout, global.proxy.as_deref(), false)?;
         Ok(Self {
-            executor: Arc::new(RequestExecutor::new(client)),
+            executor: Arc::new(RequestExecutor::new(client, timeout)),
         })
     }
 
