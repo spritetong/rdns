@@ -1,8 +1,8 @@
 //! Local network interface IP reader and intelligent address filter.
 
 use crate::error::IpFetchError;
-pub use ifaddrsx::is_eui64_slaac;
-use ifaddrsx::{get_interfaces, is_link_local_ipv6, is_unique_local_ipv6};
+use ifaddrsx::get_interfaces;
+pub use ifaddrsx::{Ipv4AddrExt, Ipv6AddrExt};
 use regex::Regex;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -110,7 +110,7 @@ impl InterfaceIpFetcher {
                         continue;
                     }
                     if !self.allow_private_v4
-                        && (ip.is_private() || ip.is_link_local() || is_cgnat(ip))
+                        && (ip.is_private() || ip.is_link_local() || ip.is_cgnat())
                     {
                         continue;
                     }
@@ -145,11 +145,11 @@ impl InterfaceIpFetcher {
                         continue;
                     }
                     // Filter Link-Local (fe80::/10)
-                    if is_link_local_ipv6(&ip) {
+                    if ip.is_link_local_ipv6() {
                         continue;
                     }
                     // Filter ULA (fc00::/7)
-                    if !self.allow_private_v6 && is_unique_local_ipv6(&ip) {
+                    if !self.allow_private_v6 && ip.is_unique_local_ipv6() {
                         continue;
                     }
                     // Check prefix if specified
@@ -185,13 +185,13 @@ impl InterfaceIpFetcher {
 
         // 1. Prioritize SLAAC (EUI-64) address if prefer_slaac is enabled
         if self.prefer_slaac
-            && let Some(&slaac_ip) = candidates.iter().find(|ip| is_eui64_slaac(ip))
+            && let Some(&slaac_ip) = candidates.iter().find(|ip| ip.is_eui64_slaac())
         {
             return Ok(slaac_ip);
         }
 
         // 2. Prioritize stable (non-temporary) IPv6 addresses (D4)
-        if let Some(&stable_ip) = candidates.iter().find(|ip| !is_rfc4941_temporary(ip)) {
+        if let Some(&stable_ip) = candidates.iter().find(|ip| !ip.is_rfc4941_temporary()) {
             return Ok(stable_ip);
         }
 
@@ -204,26 +204,6 @@ impl InterfaceIpFetcher {
     }
 }
 
-/// Returns whether the given IPv6 address is likely a temporary address (RFC 4941 / RFC 8981).
-///
-/// In RFC 4941 / RFC 8981, temporary interface identifiers have the universal/local bit
-/// (bit 1 of octet 8) set to 0 (indicating local scope in IEEE/EUI-64 terms).
-/// They are also not EUI-64 addresses (which have 0xff 0xfe at octets 11-12)
-/// and not low-suffix static/DHCPv6 addresses (where octets 8..14 are all zero).
-pub fn is_rfc4941_temporary(ip: &Ipv6Addr) -> bool {
-    let octets = ip.octets();
-    let u_bit_is_zero = (octets[8] & 0x02) == 0;
-    let is_eui64 = octets[11] == 0xff && octets[12] == 0xfe;
-    let is_low_suffix = octets[8..14] == [0, 0, 0, 0, 0, 0];
-
-    u_bit_is_zero && !is_eui64 && !is_low_suffix
-}
-
-fn is_cgnat(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 100 && (octets[1] >= 64 && octets[1] <= 127)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,9 +213,11 @@ mod tests {
         if let Ok(interfaces) = ifaddrsx::get_interfaces(false) {
             for iface in interfaces {
                 println!(
-                    "IFACE: '{}' (friendly: '{}'), IPs: {:?}",
+                    "IFACE: '{}' (friendly: '{}', is_up: {}, mac: {:?}), IPs: {:?}",
                     iface.name,
                     iface.friendly_name(),
+                    iface.is_up(),
+                    iface.mac_addr,
                     iface.ips
                 );
             }
@@ -245,31 +227,55 @@ mod tests {
     #[test]
     fn test_is_eui64_slaac() {
         let slaac: Ipv6Addr = "240e:3a1:ec9:e531:dabb:c1ff:fe67:6221".parse().unwrap();
-        assert!(is_eui64_slaac(&slaac));
+        assert!(slaac.is_eui64_slaac());
 
         let dhcp: Ipv6Addr = "240e:3a1:ec9:e531::737".parse().unwrap();
-        assert!(!is_eui64_slaac(&dhcp));
+        assert!(!dhcp.is_eui64_slaac());
 
         let loopback: Ipv6Addr = "::1".parse().unwrap();
-        assert!(!is_eui64_slaac(&loopback));
+        assert!(!loopback.is_eui64_slaac());
     }
 
     #[test]
     fn test_is_rfc4941_temporary() {
         // SLAAC EUI-64 is stable, NOT temporary
         let slaac: Ipv6Addr = "240e:3a1:ec9:e531:dabb:c1ff:fe67:6221".parse().unwrap();
-        assert!(!is_rfc4941_temporary(&slaac));
+        assert!(!slaac.is_rfc4941_temporary());
 
         // DHCPv6 / static low suffix is stable, NOT temporary
         let dhcp: Ipv6Addr = "240e:3a1:ec9:e531::737".parse().unwrap();
-        assert!(!is_rfc4941_temporary(&dhcp));
+        assert!(!dhcp.is_rfc4941_temporary());
 
         let static_ip: Ipv6Addr = "240e:3a1:ec9:e531::1".parse().unwrap();
-        assert!(!is_rfc4941_temporary(&static_ip));
+        assert!(!static_ip.is_rfc4941_temporary());
 
         // RFC 4941 privacy temporary address: randomized 64-bit IID with u-bit=0
         // e.g. 0xe852 (1110 1000, bit 1 is 0)
         let temp_ip: Ipv6Addr = "240e:3a1:ec9:e531:e852:6a12:b37e:8914".parse().unwrap();
-        assert!(is_rfc4941_temporary(&temp_ip));
+        assert!(temp_ip.is_rfc4941_temporary());
+    }
+
+    #[test]
+    fn test_is_cgnat() {
+        let cgnat_ip: Ipv4Addr = "100.64.0.1".parse().unwrap();
+        assert!(cgnat_ip.is_cgnat());
+
+        let public_ip: Ipv4Addr = "8.8.8.8".parse().unwrap();
+        assert!(!public_ip.is_cgnat());
+
+        let private_ip: Ipv4Addr = "192.168.1.1".parse().unwrap();
+        assert!(!private_ip.is_cgnat());
+    }
+
+    #[test]
+    fn test_eui64_mac_roundtrip() {
+        let slaac: Ipv6Addr = "240e:3a1:ec9:e531:dabb:c1ff:fe67:6221".parse().unwrap();
+        let mac = slaac.mac_from_eui64_slaac();
+        assert!(mac.is_some());
+        let mac = mac.unwrap();
+
+        let prefix: Ipv6Addr = "240e:3a1:ec9:e531::".parse().unwrap();
+        let synthesized = Ipv6Addr::from_mac_slaac(&prefix, &mac);
+        assert_eq!(synthesized, slaac);
     }
 }

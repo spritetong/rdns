@@ -273,7 +273,7 @@ tasks:
 | **HTTP 引擎** | `reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "socks"] }` | 基于 `rustls` 纯内存安全实现，跨平台纯静态编译；默认导入操作系统原生证书链，自动信任企业/系统根证书；支持 SOCKS5 代理 |
 | **命令行解析** | `clap = { version = "4", features = ["derive", "env"] }` | 强类型 CLI 解析，易于扩展 `--config`, `--once`, `--dry-run`, `--worker-threads`, `--state` 等命令参数 |
 | **配置解析与展开** | `serde`, `serde_yaml`, `shellexpand` | 强类型结构体反序列化，错误提示精确到行号；支持 `${ENV_NAME}` 环境变量安全解析 |
-| **网卡 IP 嗅探** | `ifaddrsx = "0.4"` | 高性能跨平台（Windows/Linux/macOS）网卡与 IP 枚举，原生支持 Windows 友好网卡名称与 RFC 4291 EUI-64 SLAAC 识别 |
+| **网卡 IP 嗅探** | `ifaddrsx = "0.4.1"` | 高性能跨平台（Windows/Linux/macOS）网卡与 IP 枚举，原生支持 Windows 友好网卡名称、RFC 4291 EUI-64 SLAAC 识别、RFC 4941 临时地址识别与 RFC 6598 CGNAT 识别 |
 | **文本与正则** | `regex` | 用于响应断言校验与 URL 变量模板替换 |
 | **日志与观测** | `tracing`, `tracing-subscriber` | 结构化异步日志输出，排查异步任务追踪极其直观 |
 
