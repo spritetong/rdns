@@ -1,5 +1,6 @@
 global:
   interval: 300            # 全局默认轮询间隔（秒）
+  retry_interval: 60       # Update 失败且 DNS 记录不一致时的快速重试恢复间隔（秒，默认 60）
   timeout: 10              # HTTP 请求超时（秒）
   shutdown_timeout: 10     # 优雅停机排空最长等待时间（秒）
   worker_threads: 2        # Tokio 异步工作线程数（设为 1 则启用极轻量单线程，不设默认自适应 CPU 核心数）
@@ -34,55 +35,54 @@ notification:
         "error": "{{error_message}}"
       }
 
-tasks:
-  # 任务 1：Dynu 双栈原子更新（单请求同时推 v4 和 v6，支持环境变量注入）
-  - name: "dynu-office-dualstack"
-    interval: 600
-
+interfaces:
+  - name: "Local"
+    interval: 300
+    retry_interval: 60         # 可选单独覆盖：Update 失败且 DNS 记录不一致时的快速重试间隔
+    dns_server: "8.8.8.8"      # 可选 DNS 服务器，用于向远端比对域名实际解析记录（如发现被手动改错自动恢复）
     ipv4:
       enabled: true
       source: "remote"
       urls:
+        - "https://ipv4.icanhazip.com"
+        - "https://v4.ident.me"
         - "https://api.ipify.org"
-        - "https://ip4.seeip.org"
-
-    ipv6:
-      enabled: true
-      source: "remote"
-      urls:
-        - "https://api64.ipify.org"
-        - "https://ip6.seeip.org"
-      # 或者走网卡读取 (自动排除链路本地 fe80::、内网 ULA fc00::/7 及临时隐私扩展地址):
-      # source: "interface"
-      # interface: "eth0"
-      # ipv6_prefix: "240e:"
-
-    request:
-      method: "GET"
-      # 支持环境变量展开 ${DYNU_PASSWORD}，避免密码明文存储
-      url: "https://api.dynu.com/nic/update?hostname=wox-office.freeddns.org&myip={{ipv4}}&myipv6={{ipv6}}&password=${DYNU_PASSWORD:-YOUR_UPDATE_PASSWORD}"
-      # 校验响应体，必须包含 good 或 nochg 才算成功
-      success_regex: "^(good|nochg)"
-
-  # 任务 2：另一个独立的纯 IPv6 更新示例（POST JSON 格式）
-  - name: "custom-v6-webhook"
-    interval: 300
 
     ipv6:
       enabled: true
       source: "interface"
-      interface: "eth0"
+      interface: "Local"       # 网卡名称 (Windows 为适配器友好名称，Linux 为 eth0 等)
+      prefer_slaac: true       # 优先识别并选取稳定无状态自动配置 (EUI-64 SLAAC) IPv6 地址
 
+tasks:
+  # 任务 1：Dynu 双栈原子更新（使用预定义 provider: dynu 与 args 命名参数）
+  - name: "dynu-office-dualstack"
+    # interface: "Local"       # 可选，未配置则默认取第一个 interface
+    domain: "wox-office.freeddns.org" # 配置对应域名后，每次轮询会自动比对远端 DNS 解析，不一致立即触发纠错更新
+    force_update_interval: 86400 # 针对该任务的心跳强制保活周期（秒）
+    provider: "dynu"           # 内置预定义服务商模板，可使用 `rdns --provider dynu` 查询模板详情
+    args:
+      password: "${DYNU_PASSWORD:-YOUR_UPDATE_PASSWORD}" # 支持环境变量展开，自动注入为 {{password}}
+
+  # 任务 2：另一个独立的纯 IPv6 更新示例（使用自定义 request 与 args 命名参数）
+  - name: "custom-v6-webhook"
+    interface: "Local"
+    domain: "home.example.com"
+    force_update_interval: 43200
+    args:
+      auth_token: "${SECRET_TOKEN:-YOUR_SECRET_TOKEN}"
     request:
       method: "POST"
       url: "https://api.example.com/v1/ddns/update"
       headers:
-        Authorization: "Bearer ${SECRET_TOKEN:-YOUR_SECRET_TOKEN}"
+        Authorization: "Bearer {{auth_token}}"
         Content-Type: "application/json"
       body: |
         {
-          "domain": "home.example.com",
+          "domain": "{{domain}}",
           "ip": "{{ipv6}}"
         }
       success_contains:
         - '"status":"success"'
+
+

@@ -1,6 +1,8 @@
 //! Local network interface IP reader and intelligent address filter.
 
 use crate::error::IpFetchError;
+pub use ifaddrsx::is_eui64_slaac;
+use ifaddrsx::{get_interfaces, is_link_local_ipv6, is_unique_local_ipv6};
 use regex::Regex;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -8,6 +10,8 @@ pub struct InterfaceIpFetcher {
     v4_interface_pattern: Option<String>,
     v6_interface_pattern: Option<String>,
     v6_prefix: Option<String>,
+    v6_regex: Option<String>,
+    prefer_slaac: bool,
     allow_private_v4: bool,
     allow_private_v6: bool,
 }
@@ -17,6 +21,8 @@ impl InterfaceIpFetcher {
         v4_interface_pattern: Option<String>,
         v6_interface_pattern: Option<String>,
         v6_prefix: Option<String>,
+        v6_regex: Option<String>,
+        prefer_slaac: bool,
         allow_private_v4: bool,
         allow_private_v6: bool,
     ) -> Self {
@@ -24,6 +30,8 @@ impl InterfaceIpFetcher {
             v4_interface_pattern,
             v6_interface_pattern,
             v6_prefix,
+            v6_regex,
+            prefer_slaac,
             allow_private_v4,
             allow_private_v6,
         }
@@ -35,13 +43,13 @@ impl InterfaceIpFetcher {
             name: format!("Invalid interface pattern '{}': {}", pattern_str, e),
         })?;
 
-        let if_addrs = get_if_addrs::get_if_addrs().map_err(IpFetchError::Io)?;
+        let interfaces = get_interfaces(true).map_err(IpFetchError::Io)?;
         let mut matched_interface = false;
 
-        for iface in if_addrs {
-            if interface_matches(&iface.name, &regex) {
+        for iface in interfaces {
+            if regex.is_match(&iface.name) || regex.is_match(iface.friendly_name()) {
                 matched_interface = true;
-                if let std::net::IpAddr::V4(ip) = iface.addr.ip() {
+                for ip in iface.ipv4_addrs() {
                     if ip.is_loopback() {
                         continue;
                     }
@@ -72,23 +80,31 @@ impl InterfaceIpFetcher {
             name: format!("Invalid interface pattern '{}': {}", pattern_str, e),
         })?;
 
-        let if_addrs = get_if_addrs::get_if_addrs().map_err(IpFetchError::Io)?;
-        let mut matched_interface = false;
+        let v6_filter_regex = if let Some(ref r) = self.v6_regex {
+            Some(Regex::new(r).map_err(|e| IpFetchError::InterfaceNotFound {
+                name: format!("Invalid ipv6_regex '{}': {}", r, e),
+            })?)
+        } else {
+            None
+        };
 
-        for iface in if_addrs {
-            if interface_matches(&iface.name, &regex) {
+        let interfaces = get_interfaces(true).map_err(IpFetchError::Io)?;
+        let mut matched_interface = false;
+        let mut candidates = Vec::new();
+
+        for iface in interfaces {
+            if regex.is_match(&iface.name) || regex.is_match(iface.friendly_name()) {
                 matched_interface = true;
-                if let std::net::IpAddr::V6(ip) = iface.addr.ip() {
+                for ip in iface.ipv6_addrs() {
                     if ip.is_loopback() || ip.is_multicast() {
                         continue;
                     }
                     // Filter Link-Local (fe80::/10)
-                    let segments = ip.segments();
-                    if (segments[0] & 0xffc0) == 0xfe80 {
+                    if is_link_local_ipv6(&ip) {
                         continue;
                     }
-                    // Filter ULA (fc00::/7, starts with 0xfc or 0xfd)
-                    if !self.allow_private_v6 && (segments[0] & 0xfe00) == 0xfc00 {
+                    // Filter ULA (fc00::/7)
+                    if !self.allow_private_v6 && is_unique_local_ipv6(&ip) {
                         continue;
                     }
                     // Check prefix if specified
@@ -98,52 +114,39 @@ impl InterfaceIpFetcher {
                             continue;
                         }
                     }
-                    return Ok(ip);
+                    // Check regex filter if specified
+                    if let Some(ref reg) = v6_filter_regex {
+                        let ip_str = ip.to_string();
+                        if !reg.is_match(&ip_str) {
+                            continue;
+                        }
+                    }
+                    candidates.push(ip);
                 }
             }
         }
 
         if !matched_interface {
-            Err(IpFetchError::InterfaceNotFound {
+            return Err(IpFetchError::InterfaceNotFound {
                 name: pattern_str.to_string(),
-            })
-        } else {
-            Err(IpFetchError::NoPublicIpFound {
-                name: pattern_str.to_string(),
-            })
+            });
         }
-    }
-}
 
-fn interface_matches(iface_name: &str, regex: &Regex) -> bool {
-    if regex.is_match(iface_name) {
-        return true;
-    }
+        if candidates.is_empty() {
+            return Err(IpFetchError::NoPublicIpFound {
+                name: pattern_str.to_string(),
+            });
+        }
 
-    #[cfg(windows)]
-    {
-        if let Some(friendly_name) = get_windows_friendly_name(iface_name)
-            && regex.is_match(&friendly_name)
+        // Prioritize SLAAC (EUI-64) address if prefer_slaac is enabled
+        if self.prefer_slaac
+            && let Some(&slaac_ip) = candidates.iter().find(|ip| is_eui64_slaac(ip))
         {
-            return true;
+            return Ok(slaac_ip);
         }
+
+        Ok(candidates[0])
     }
-
-    false
-}
-
-#[cfg(windows)]
-fn get_windows_friendly_name(guid: &str) -> Option<String> {
-    use winreg::RegKey;
-    use winreg::enums::HKEY_LOCAL_MACHINE;
-
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let subkey_path = format!(
-        r"SYSTEM\CurrentControlSet\Control\Network\{{4D36E972-E325-11CE-BFC1-08002BE10318}}\{}\Connection",
-        guid
-    );
-    let key = hklm.open_subkey(subkey_path).ok()?;
-    key.get_value("Name").ok()
 }
 
 fn is_cgnat(ip: Ipv4Addr) -> bool {
@@ -157,20 +160,27 @@ mod tests {
 
     #[test]
     fn test_print_all_interfaces() {
-        if let Ok(addrs) = get_if_addrs::get_if_addrs() {
-            for a in addrs {
-                #[cfg(windows)]
-                let friendly = get_windows_friendly_name(&a.name);
-                #[cfg(not(windows))]
-                let friendly: Option<String> = None;
-
+        if let Ok(interfaces) = ifaddrsx::get_interfaces(false) {
+            for iface in interfaces {
                 println!(
-                    "IFACE: '{}' (friendly: {:?}), IP: {}",
-                    a.name,
-                    friendly,
-                    a.addr.ip()
+                    "IFACE: '{}' (friendly: '{}'), IPs: {:?}",
+                    iface.name,
+                    iface.friendly_name(),
+                    iface.ips
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_is_eui64_slaac() {
+        let slaac: Ipv6Addr = "240e:3a1:ec9:e531:dabb:c1ff:fe67:6221".parse().unwrap();
+        assert!(is_eui64_slaac(&slaac));
+
+        let dhcp: Ipv6Addr = "240e:3a1:ec9:e531::737".parse().unwrap();
+        assert!(!is_eui64_slaac(&dhcp));
+
+        let loopback: Ipv6Addr = "::1".parse().unwrap();
+        assert!(!is_eui64_slaac(&loopback));
     }
 }

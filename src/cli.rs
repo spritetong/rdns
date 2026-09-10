@@ -27,6 +27,18 @@ pub struct Cli {
     #[arg(long = "check")]
     pub check: bool,
 
+    /// List all predefined DDNS providers and their templates
+    #[arg(long = "list-providers")]
+    pub list_providers: bool,
+
+    /// Query and show default request template and details for a predefined provider
+    #[arg(
+        long = "show-provider",
+        visible_alias = "provider",
+        value_name = "NAME"
+    )]
+    pub show_provider: Option<String>,
+
     /// Number of Tokio runtime worker threads (1 for single-thread lightweight runtime)
     #[arg(short = 't', long = "worker-threads")]
     pub worker_threads: Option<usize>,

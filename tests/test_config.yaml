@@ -5,6 +5,20 @@ global:
   worker_threads: 2
   log_level: "info"
 
+interfaces:
+  - name: "mock-iface"
+    interval: 2
+    ipv4:
+      enabled: true
+      source: "remote"
+      urls:
+        - "http://127.0.0.1:8899/ip/v4"
+    ipv6:
+      enabled: true
+      source: "remote"
+      urls:
+        - "http://127.0.0.1:8899/ip/v6"
+
 notification:
   on_change:
     enabled: true
@@ -21,30 +35,15 @@ notification:
 
 tasks:
   - name: "mock-dualstack"
-    interval: 2
-    ipv4:
-      enabled: true
-      source: "remote"
-      urls:
-        - "http://127.0.0.1:8899/ip/v4"
-    ipv6:
-      enabled: true
-      source: "remote"
-      urls:
-        - "http://127.0.0.1:8899/ip/v6"
+    # interface omitted, defaults to "mock-iface"
     request:
       method: "GET"
       url: "http://127.0.0.1:8899/nic/update?hostname=test.example.com&myip={{ipv4}}&myipv6={{ipv6}}&password=${TEST_PASS:-mocksecret}"
       success_regex: "^(good|nochg)"
 
   - name: "mock-v6"
-    interval: 2
+    interface: "mock-iface"
     domain: "v6.example.com"
-    ipv6:
-      enabled: true
-      source: "remote"
-      urls:
-        - "http://127.0.0.1:8899/ip/v6"
     request:
       method: "POST"
       url: "http://127.0.0.1:8899/api/v1/ddns/update"

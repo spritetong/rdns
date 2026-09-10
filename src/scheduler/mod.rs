@@ -1,8 +1,8 @@
-//! Scheduler service managing multiple DDNS tasks.
+//! Scheduler service managing multiple interface IP tasks and their bound Webhooks.
 
 mod task;
 
-pub use task::TaskScheduler;
+pub use task::{InterfaceScheduler, TaskExecutor};
 
 use crate::config::Config;
 use crate::engine::HttpEngine;
@@ -10,11 +10,12 @@ use crate::error::RdnsError;
 use crate::lifecycle::LifecycleManager;
 use crate::notification::NotificationDispatcher;
 use crate::persistence::StateStore;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 pub struct SchedulerService {
-    schedulers: Vec<Arc<TaskScheduler>>,
+    interfaces: Vec<Arc<InterfaceScheduler>>,
     lifecycle: Arc<LifecycleManager>,
 }
 
@@ -28,34 +29,63 @@ impl SchedulerService {
         let engine = HttpEngine::new(&config.global)?;
         let notifier = NotificationDispatcher::new(config.notification.clone(), engine.clone());
         let default_interval = config.global.interval;
+        let default_retry_interval = config.global.retry_interval;
         let timeout = Duration::from_secs(config.global.timeout);
 
-        let mut schedulers = Vec::new();
+        // Group tasks by interface name.
+        // If task does not specify an interface, default to the first interface in config.interfaces.
+        let default_iface_name = &config.interfaces[0].name;
+        let mut tasks_by_iface: HashMap<String, Vec<Arc<TaskExecutor>>> = HashMap::new();
+        let dns_resolver = crate::ip::DnsResolver::new();
+
         for task_cfg in &config.tasks {
-            let s = TaskScheduler::new(
-                task_cfg.clone(),
-                default_interval,
+            let iface_name = task_cfg.interface.as_deref().unwrap_or(default_iface_name);
+            let iface_cfg = config.interfaces.iter().find(|i| i.name == iface_name);
+            let dns_server = iface_cfg
+                .and_then(|i| i.dns_server.clone())
+                .or_else(|| config.global.dns_server.clone());
+
+            let task_ctx = task::TaskContext {
+                engine: engine.clone(),
+                state_store: state_store.clone(),
+                notifier: notifier.clone(),
+                dns_resolver: dns_resolver.clone(),
+                dns_server,
                 timeout,
-                engine.clone(),
-                state_store.clone(),
-                notifier.clone(),
                 dry_run,
+            };
+            let executor = Arc::new(TaskExecutor::new(task_cfg.clone(), task_ctx));
+            tasks_by_iface
+                .entry(iface_name.to_string())
+                .or_default()
+                .push(executor);
+        }
+
+        let mut interfaces = Vec::new();
+        for iface_cfg in &config.interfaces {
+            let bound_tasks = tasks_by_iface.remove(&iface_cfg.name).unwrap_or_default();
+            let s = InterfaceScheduler::new(
+                iface_cfg.clone(),
+                bound_tasks,
+                default_interval,
+                default_retry_interval,
+                timeout,
             );
-            schedulers.push(Arc::new(s));
+            interfaces.push(Arc::new(s));
         }
 
         Ok(Self {
-            schedulers,
+            interfaces,
             lifecycle,
         })
     }
 
-    /// Run all tasks once (e.g. for --once or --dry-run) and return the overall result.
+    /// Run all interface IP resolutions and their bound tasks once (e.g. for --once or --dry-run).
     pub async fn run_once(&self) -> Result<(), RdnsError> {
         let mut has_error = false;
-        for s in &self.schedulers {
+        for s in &self.interfaces {
             if let Err(e) = s.run_once().await {
-                tracing::error!(task = %s.name(), error = %e, "Task failed in run_once");
+                tracing::error!(interface = %s.name(), error = %e, "Interface failed in run_once");
                 has_error = true;
             }
         }
@@ -69,19 +99,21 @@ impl SchedulerService {
         }
     }
 
-    /// Spawn all tasks into the TaskManager and wait for OS shutdown signal.
+    /// Spawn each interface IP task into the TaskManager and wait for OS shutdown signal.
     pub async fn run_daemon(&self) {
-        for s in &self.schedulers {
-            let task_clone = Arc::clone(s);
+        for s in &self.interfaces {
+            let iface_clone = Arc::clone(s);
             let child_token = self.lifecycle.child_token();
-            let task_name = s.name().to_string();
+            let task_name = format!("iface-{}", s.name());
 
             self.lifecycle.task_manager().spawn(task_name, async move {
-                task_clone.run_loop(child_token).await;
+                iface_clone.run_loop(child_token).await;
             });
         }
 
-        tracing::info!("All tasks spawned, daemon running. Awaiting OS shutdown signal...");
+        tracing::info!(
+            "All interface tasks spawned, daemon running. Awaiting OS shutdown signal..."
+        );
         self.lifecycle.wait_and_shutdown().await;
         tracing::info!("RDNS daemon stopped cleanly");
     }

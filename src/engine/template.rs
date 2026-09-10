@@ -9,6 +9,7 @@ pub struct TemplateContext<'a> {
     pub ipv6: Option<&'a str>,
     pub domain: Option<&'a str>,
     pub timestamp: Option<u64>,
+    pub args: Option<&'a std::collections::HashMap<String, String>>,
 }
 
 impl<'a> TemplateContext<'a> {
@@ -18,7 +19,7 @@ impl<'a> TemplateContext<'a> {
     }
 }
 
-/// Render a template string by replacing placeholders like `{{ipv4}}`.
+/// Render a template string by replacing placeholders like `{{ipv4}}` or custom named parameters `{{password}}`.
 /// If a placeholder is present in the template but missing in the context,
 /// returns `Err(TemplateError::MissingSlot)`.
 pub fn render_template(template: &str, ctx: &TemplateContext) -> Result<String, TemplateError> {
@@ -59,9 +60,13 @@ pub fn render_template(template: &str, ctx: &TemplateContext) -> Result<String, 
                     output.push_str(&ts.to_string());
                 }
                 other => {
-                    return Err(TemplateError::MissingSlot {
-                        slot: other.to_string(),
-                    });
+                    if let Some(val) = ctx.args.and_then(|a| a.get(other)) {
+                        output.push_str(val);
+                    } else {
+                        return Err(TemplateError::MissingSlot {
+                            slot: other.to_string(),
+                        });
+                    }
                 }
             }
             rest = &after_start[end_idx + 2..];
@@ -78,6 +83,7 @@ pub fn render_template(template: &str, ctx: &TemplateContext) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_template_rendering_success() {
@@ -86,6 +92,7 @@ mod tests {
             ipv6: Some("2001:db8::1"),
             domain: Some("example.com"),
             timestamp: Some(1234567890),
+            args: None,
         };
 
         let tmpl =
@@ -98,12 +105,53 @@ mod tests {
     }
 
     #[test]
+    fn test_template_custom_args_success() {
+        let mut args = HashMap::new();
+        args.insert("password".to_string(), "my_secret_pass".to_string());
+        args.insert("zone_id".to_string(), "abc123xyz".to_string());
+
+        let ctx = TemplateContext {
+            ipv4: Some("1.2.3.4"),
+            ipv6: None,
+            domain: Some("example.com"),
+            timestamp: None,
+            args: Some(&args),
+        };
+
+        let tmpl = "https://api.example.com/update?domain={{domain}}&ip={{ipv4}}&pass={{password}}&zone={{zone_id}}";
+        let res = render_template(tmpl, &ctx).expect("rendering should succeed");
+        assert_eq!(
+            res,
+            "https://api.example.com/update?domain=example.com&ip=1.2.3.4&pass=my_secret_pass&zone=abc123xyz"
+        );
+    }
+
+    #[test]
+    fn test_template_custom_args_missing() {
+        let args = HashMap::new();
+        let ctx = TemplateContext {
+            ipv4: Some("1.2.3.4"),
+            ipv6: None,
+            domain: Some("example.com"),
+            timestamp: None,
+            args: Some(&args),
+        };
+
+        let tmpl = "https://api.example.com/update?pass={{password}}";
+        let err = render_template(tmpl, &ctx).unwrap_err();
+        match err {
+            TemplateError::MissingSlot { slot } => assert_eq!(slot, "password"),
+        }
+    }
+
+    #[test]
     fn test_template_missing_slot() {
         let ctx = TemplateContext {
             ipv4: None,
             ipv6: Some("2001:db8::1"),
             domain: Some("example.com"),
             timestamp: None,
+            args: None,
         };
 
         let tmpl = "https://api.example.com/update?ip={{ipv4}}";

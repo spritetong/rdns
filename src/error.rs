@@ -61,6 +61,9 @@ pub enum IpFetchError {
 
     #[error("I/O error during IP lookup: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("DNS lookup error for domain '{domain}': {message}")]
+    DnsLookup { domain: String, message: String },
 }
 
 /// Errors occurring during URL/Body template interpolation.

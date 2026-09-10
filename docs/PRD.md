@@ -4,49 +4,89 @@
 
 *   **零服务商硬编码**：不内置任何特定 DNS 服务商（如 Cloudflare, Dynu, AliDNS 等）的专用 SDK，统一抽象为 **HTTP 请求引擎**。
     
-*   **数组驱动的并发任务架构**：以 `tasks` 列表（Array）为基础，彻底告别以“服务商名称作为 Map Key”的死板设计，支持任意数量、同服务商或不同服务商的任务并行独立运行。
+*   **命名的 Interface 出口池与任务解耦**：将网络出口抽象为独立的 `interfaces` 池，每个网卡出口周期性执行单次 IP 探测，其绑定的所有 Webhook 任务共享探测结果，彻底根绝多任务场景下的并发重复查询。
     
 *   **原生双栈与单请求原子更新**：单任务可同时感知本地 IPv4 与 IPv6，并支持在单次 HTTP 请求模板中同时填充双栈地址。
     
 *   **声明式成功校验**：支持基于 HTTP 状态码与响应体正则（如 `good|nochg`）判断是否更新成功，杜绝因服务商返回 200 但业务报错而导致的假成功。
+
+*   **RFC 4291 EUI-64 SLAAC 智能识别**：针对宽带运营商双栈下网卡同时分配 DHCPv6 与 SLAAC 两个公网 IPv6 的场景，自动识别基于硬件 MAC 派生的稳定 SLAAC 地址并优先绑定。
+
+*   **基于 hickory-resolver 的远端 DNS 核对与纠错**：引入标准库 `hickory-resolver` 异步查询公网/自建 DNS 服务器，当云端记录被手动改错时主动感知并纠错。
+
+*   **状态自适应双速轮询机制**：**Update 失败 并且 DNS 查询不一致才缩短周期至 `retry_interval`（默认 60s）**，既能快速自愈，又避免了正常更新后因 DNS TTL 传播延迟导致盲目刷爆服务商 API。
 
 *   **纯静态交付与平台自适应**：基于纯 Rust 实现的 `rustls` 栈并默认导入系统原生证书链，无须依赖 OpenSSL 动态库；支持从极简单线程（嵌入式路由器）到高并发多线程的工作线程配置自适应。
     
 
 ### 二、 核心功能需求
 
-#### 1\. IP 获取模块 (IP Resolver)
+#### 1. IP 获取与网卡出口模块 (IP & Interface Resolver)
 
-每个任务可独立配置 IPv4 / IPv6 的获取策略：
+网络探测统一归属为命名的 `interfaces` 列表管理：
 
-*   **远程 HTTP 查询**：支持通过指定的 URL 查询，底层需支持强制绑定协议栈（`local_address` 绑定 `0.0.0.0` 查 v4，绑定 `::` 查 v6）。
+*   **命名的出口接口池 (Named Interface Pool)**：
+    *   用户在 `interfaces` 中定义出口名（如 `Local`、`Tailscale`）、查询周期及探测源（`ipv4`/`ipv6`）。
+    *   在后台常驻模式下，每个 `interface` 独占 1 个异步协程周期性执行 IP 嗅探，所有引用该网卡的任务直接复用嗅探结果，实现“单次探测，多任务扇出”。
+    *   任务若未配置 `interface` 字段，自动默认绑定配置中的首个网卡接口。
+
+*   **远程 HTTP 查询**：
+    *   支持通过指定的 URL 查询，底层强制绑定协议栈（`local_address` 绑定 `0.0.0.0` 查 v4，绑定 `::` 查 v6）。
+    *   支持配置多个查询源（URL 数组），按顺序回退尝试。
     
-*   **本地网卡直读与智能过滤**：
-    *   支持直接遍历本地物理网卡获取公网地址，支持通过正则过滤接口名（如 `eth.*|enp.*`）及 IPv6 前缀。
-    *   **IPv6 智能净化**：自动过滤链路本地地址（`fe80::/10`）、唯一本地地址 ULA（`fc00::/7`）及 RFC 4941 临时隐私扩展地址（Temporary Addresses），确保仅采集长期稳定的公网 SLAAC / DHCPv6 单播地址。
+*   **本地网卡直读与智能净化**：
+    *   支持直接遍历本地物理网卡获取公网地址，支持通过网卡友好名称或正则匹配接口名。
+    *   **IPv6 智能净化**：自动过滤链路本地地址（`fe80::/10`）、唯一本地地址 ULA（`fc00::/7`）及 RFC 4941 临时隐私扩展地址（Temporary Addresses）。
+    *   **RFC 4291 EUI-64 SLAAC 优先识别 (`prefer_slaac: true`)**：自动判定 IPv6 后 64 位接口标识符（`octets[11] == 0xff && octets[12] == 0xfe`），在存在多个公网 IPv6 时精准优先抓取长久稳定的物理 MAC 映射地址。
     *   **IPv4 私网防呆**：默认排除 RFC 1918 私有地址与 CGNAT（`100.64.0.0/10`），可通过 `allow_private: true` 显式开启私网 DNS 场景。
-    
-*   **容错与回退**：支持配置多个查询源（URL 数组），按顺序回退尝试。
-    
 
-#### 2\. IP 状态管理与变更检测 (State & Cache Engine)
+
+#### 2. IP 状态管理、DNS 纠错与自适应调度 (State, DNS Reconciliation & Adaptive Loop)
 
 *   **内存缓存与幂等比对**：仅当检测到新 IP 与上次更新成功的 IP 不一致时才触发外部请求；若服务商要求定期心跳，支持配置 `force_update_interval`（如 24 小时强制同步一次）。
     
-*   **状态持久化（可选）**：支持将上次成功的 IP 状态写入本地持久化文件（如 `state.json`），防止程序重启时盲目重复请求导致服务商触发频控（Rate Limit）。
+*   **状态持久化**：支持将上次成功的 IP 状态写入本地持久化文件（如 `state.json`），采用临时文件与原子替换（Atomic Rename）保证可靠性，防止程序重启时盲目重复请求导致服务商触发频控（Rate Limit）。
+
+*   **基于 hickory-resolver 的远端 DNS 记录核对与自动纠错**：
+    *   支持在全局或 `interface` 级配置公网 DNS 服务器（`dns_server: "8.8.8.8"` 或 `1.1.1.1:53`），未配置则自动使用宿主机系统 DNS。
+    *   当本地 IP 未变动时，每次轮询自动通过 `hickory-resolver` 异步查询当前任务域名的公网 A / AAAA 记录。
+    *   若发现远端 DNS 记录与实际本地 IP 不一致（如控制台手动改错），立即判定异常并触发 DDNS 纠错更新。
+    *   更新成功后带有 60 秒冷却防抖保护（`last_success_time` 60s 内不重复查 DNS），避免 TTL 缓存传播期的反复无效查询。
+
+*   **状态自适应双速轮询（Dual-Speed Adaptive Polling）**：
+    *   **稳态（Steady State）**：系统正常运行时保持长周期 `interval`（默认 300s，节能、省流量且不占用 API 配额）。
+    *   **快速恢复态（Reconciliation State）**：**当且仅当 Update 失败 并且 DNS 查询不一致时**，下一次轮询休眠时间自动缩短为 `retry_interval`（默认 60s），进行快速重试以尽早恢复。
+    *   **防误判与频控保护**：Update 成功时，即使 DNS 处于 TTL 传播延迟中暂时返回旧记录，也**绝对不缩短周期**，严防误判导致的接口刷屏封号。
+    *   **收敛自动回退**：一旦后续 Update 成功且 DNS 记录核对一致，系统自动平滑恢复为正常的 300s 周期。
     
 
-#### 3\. 自定义请求引擎与 TLS 规范 (Custom Request Engine & TLS)
+#### 3. 自定义请求引擎、命名参数与预定义服务商 (Request Engine, Task Args & Providers)
 
-将每次更新动作抽象为一个参数化 HTTP 请求：
+将每次更新动作抽象为一个参数化 HTTP 请求，并提供预定义服务商支持：
 
-*   **变量插槽（Template Variables）**：支持在 URL、Headers、Body 中使用以下占位符：
-    *   `{{ipv4}}`：当前获取到的公网 IPv4。
-    *   `{{ipv6}}`：当前获取到的公网 IPv6。
-    *   `{{domain}}`：配置的域名。
-    *   `{{timestamp}}`：当前时间戳（秒/毫秒）。
+*   **变量插槽与统一模板渲染（Template Variables & Unified Slots）**：
+    *   **内置系统插槽**：
+        *   `{{ipv4}}`：当前获取到的公网 IPv4。
+        *   `{{ipv6}}`：当前获取到的公网 IPv6。
+        *   `{{domain}}`：配置的域名。
+        *   `{{timestamp}}`：当前时间戳（秒/毫秒）。
+    *   **自定义命名参数插槽 (`args`)**：
+        *   Task 支持配置 `args: HashMap<String, String>`，为模板提供额外的命名参数（如 `{{password}}`、`{{token}}`、`{{zone_id}}`）。
+        *   URL、Headers、Body 全面走统一的模板引擎 `src/engine/template.rs` 进行安全替换，杜绝重复代码。
         
-*   **环境变量展开（Secrets & Env Injection）**：配置文件全面支持 `${ENV_NAME}` 与 `${ENV_NAME:-default}` 语法，避免明文硬编码 Token / 密码，方便容器与 CI/CD 部署。
+*   **环境变量展开（Secrets & Env Injection）**：
+    *   配置文件全面支持 `${ENV_NAME}` 与 `${ENV_NAME:-default}` 语法，在 YAML 反序列化时自动展开。
+    *   `args` 中的密码/Token（如 `password: "${DYNU_PASSWORD}"`）可直接引用环境变量，实现凭据与代码配置隔离。
+
+*   **预定义服务商模板体系 (`provider`)**：
+    *   Task 支持声明 `provider: "dynu"`（或 `dynv6`, `duckdns`, `he`, `noip` 等）。
+    *   **模板自动装配**：当 Task 未显式配置 `request` 时，系统自动套用对应服务商的标准 HTTP 模板与成功断言（如 Dynu 的 `^(good|nochg)`）。
+    *   **参数强校验**：启动时自动核对该服务商必需的参数（如 Dynu 必需 `password`，dynv6 必需 `token`，均需 `domain`），缺失立即给出明确指引。
+    *   **内置支持清单**：`dynu` (双栈), `dynu-ipv4`, `dynu-ipv6`, `dynv6` (双栈), `dynv6-ipv4`, `dynv6-ipv6`, `duckdns` (双栈), `duckdns-ipv4`, `duckdns-ipv6`, `he` (Hurricane Electric), `noip` 等。
+
+*   **命令行服务商查询与自省 (`--list-providers` / `--provider`)**：
+    *   `rdns --list-providers`：列出所有内置服务商、官网、默认 URL 模板与必需参数。
+    *   `rdns --provider <NAME>`（别名 `--show-provider <NAME>`）：显示指定服务商的完整 HTTP 模板、参数说明与可直接复制的 YAML 任务范例。无需配置文件即可独立运行。
 
 *   **完整 HTTP 语义支持**：
     *   支持 `GET`、`POST`、`PUT`、`PATCH`。
@@ -109,11 +149,13 @@
     *   显式释放网络连接池，刷新 `tracing` 日志缓冲区，保证停机前最后一条日志被完整写入标准输出或日志文件。
 
 
-#### 7\. 命令行工具与安全演练 (CLI & Dry-Run Engine)
+#### 7. 命令行工具与安全演练 (CLI & Dry-Run Engine)
 
+*   `--list-providers`：列出所有内置预定义服务商名称、官网、请求模板及所需参数。
+*   `--provider <NAME>`（别名 `--show-provider <NAME>`）：查询指定服务商的默认请求模板详情与 YAML 任务配置示例。
 *   `--check`：静态语法检查，验证 `config.yaml` 格式、必填字段、网络接口与正则表达式合法性。
-*   `--dry-run`：执行真实 IP 探测与模板渲染并在控制台输出格式化预览（打印将发往的 Method、URL、Headers、Body、匹配规则，对敏感 Token 自动脱敏打码），**但不向服务端发出真实写入请求**。
-*   `--config <PATH>`（`-c`）：指定配置文件路径（默认查找 `./config.yaml`、`/etc/rdns/config.yaml` 等）。
+*   `--dry-run`：执行真实 IP 探测与模板渲染并在控制台输出格式化预览（打印将发往的 Method、URL、Headers、Body、匹配规则，对敏感 Token/密码自动脱敏打码），**但不向服务端发出真实写入请求**。
+*   `--config <PATH>`（`-c`）：指定配置文件路径（默认查找 `./config.yaml`）。
 *   `--once`：单次触发全部任务更新后以状态码退出。
 *   `--daemon`：常驻后台守护运行。
 *   `--worker-threads <N>`（`-t`）：指定 Tokio 运行时工作线程数（优先级高于配置文件）。
@@ -121,18 +163,16 @@
 
 ### 三、 配置文件规范示例 (`config.yaml`)
 
-采用 YAML 的列表驱动格式（`tasks:`），并原生支持环境变量注入：
-
-YAML
-
 ```yaml
 global:
-  interval: 300            # 全局默认轮询间隔（秒）
+  interval: 300            # 全局默认稳态轮询间隔（秒）
+  retry_interval: 60       # Update 失败且 DNS 记录不一致时的快速重试恢复间隔（秒，默认 60）
   timeout: 10              # HTTP 请求超时（秒）
   shutdown_timeout: 10     # 优雅停机排空最长等待时间（秒）
   worker_threads: 2        # Tokio 异步工作线程数（设为 1 则启用极轻量单线程，不设默认自适应 CPU 核心数）
   log_level: "info"        # trace | debug | info | warn | error
   # proxy: "http://127.0.0.1:7890" # 可选全局代理 (支持 http / socks5)
+  # dns_server: "8.8.8.8"  # 可选全局 DNS 服务器
 
 # 全局通用通知系统（可选）
 notification:
@@ -162,29 +202,37 @@ notification:
         "error": "{{error_message}}"
       }
 
-tasks:
-  # 任务 1：Dynu 双栈原子更新（单请求同时推 v4 和 v6，支持环境变量注入）
-  - name: "dynu-office-dualstack"
-    interval: 600
-
+# 命名的网络出口/接口池定义（每个 interface 对应一个独立的 IP 查询协程，杜绝并发重复查询）
+interfaces:
+  - name: "Local"          # 接口唯一标识（第一个接口作为任务未显式指定时的默认接口）
+    interval: 300          # 可选，IP 查询间隔（默认继承 global.interval）
+    retry_interval: 60     # 可选，Update 失败且 DNS 不一致时的快速恢复重试间隔
+    dns_server: "8.8.8.8"  # 可选 DNS 服务器，用于向远端核对域名实际解析记录（如发现被手动改错自动恢复）
     ipv4:
       enabled: true
       source: "remote"
       urls:
         - "https://api.ipify.org"
         - "https://ip4.seeip.org"
-
     ipv6:
       enabled: true
-      source: "remote"
-      urls:
-        - "https://api64.ipify.org"
-        - "https://ip6.seeip.org"
-      # 或者走网卡读取 (自动排除链路本地 fe80::、内网 ULA fc00::/7 及临时隐私扩展地址):
-      # source: "interface"
-      # interface: "eth0"
-      # ipv6_prefix: "240e:"
+      source: "interface"
+      interface: "Local"   # 网卡名称（Windows 为网卡友好名称，Linux 为 eth0 等）
+      prefer_slaac: true   # 自动优先匹配稳定的 RFC 4291 EUI-64 SLAAC 地址
 
+  - name: "Tailscale"      # 辅助专用接口示例
+    interval: 600
+    ipv6:
+      enabled: true
+      source: "interface"
+      interface: "tailscale0"
+
+tasks:
+  # 任务 1：Dynu 双栈原子更新（单请求同时推 v4 和 v6，支持环境变量注入）
+  - name: "dynu-office-dualstack"
+    # interface: "Local"   # 可选，未配置则默认绑定第一个 interface ("Local")
+    domain: "wox-office.freeddns.org" # 配置对应域名，每次轮询自动核对远端解析，不一致立即触发纠错更新
+    force_update_interval: 86400      # 24小时兜底保活心跳
     request:
       method: "GET"
       # 支持环境变量展开 ${DYNU_PASSWORD}，避免密码明文存储
@@ -194,13 +242,8 @@ tasks:
 
   # 任务 2：另一个独立的纯 IPv6 更新示例（POST JSON 格式）
   - name: "custom-v6-webhook"
-    interval: 300
-
-    ipv6:
-      enabled: true
-      source: "interface"
-      interface: "eth0"
-
+    interface: "Local"     # 共享 Local 接口单次查询到的 IP，不发起任何冗余网络查询
+    domain: "home.example.com"
     request:
       method: "POST"
       url: "https://api.example.com/v1/ddns/update"
@@ -209,68 +252,82 @@ tasks:
         Content-Type: "application/json"
       body: |
         {
-          "domain": "home.example.com",
+          "domain": "{{domain}}",
           "ip": "{{ipv6}}"
         }
       success_contains:
         - '"status":"success"'
-``` 
+```
 
 ### 四、 Rust 技术栈与模块架构
 
-#### 1\. 核心依赖选型
+#### 1. 核心依赖选型
 
 | **模块类别** | **推荐 Crates** | **选型理由** |
 | --- | --- | --- |
-| **异步运行时** | `tokio = { version = "1", features = ["rt-multi-thread", "signal", "time", "macros"] }` | 工业级异步调度标准，支持定制单线程 / 多线程工作线程池及跨平台信号监听 |
+| **异步运行时** | `tokio = { version = "1", features = ["full"] }` | 工业级异步调度标准，支持定制单线程 / 多线程工作线程池及跨平台信号监听 |
 | **异步协调与排空** | `tokio-util = { version = "0.7", features = ["rt"] }` | 提供 `CancellationToken` 实现各并发任务的优雅停机广播 |
+| **DNS 解析引擎** | `hickory-resolver = { version = "0.26.2", features = ["tokio"] }` | 纯 Rust 官方社区权威 DNS 解析标准库，支持 UDP/TCP 查询与系统/外部 DNS 解析 |
 | **HTTP 引擎** | `reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "socks"] }` | 基于 `rustls` 纯内存安全实现，跨平台纯静态编译；默认导入操作系统原生证书链，自动信任企业/系统根证书；支持 SOCKS5 代理 |
 | **命令行解析** | `clap = { version = "4", features = ["derive", "env"] }` | 强类型 CLI 解析，易于扩展 `--config`, `--once`, `--dry-run`, `--worker-threads` 等命令参数 |
 | **配置解析与展开** | `serde`, `serde_yaml`, `shellexpand` | 强类型结构体反序列化，错误提示精确到行号；支持 `${ENV_NAME}` 环境变量安全解析 |
-| **网卡 IP 嗅探** | `get_if_addrs` | 轻量级跨平台（Linux/Windows/macOS）网卡 IP 枚举 |
+| **网卡 IP 嗅探** | `ifaddrsx = "0.4"` | 高性能跨平台（Windows/Linux/macOS）网卡与 IP 枚举，原生支持 Windows 友好网卡名称与 RFC 4291 EUI-64 SLAAC 识别 |
 | **文本与正则** | `regex` | 用于响应断言校验与 URL 变量模板替换 |
 | **日志与观测** | `tracing`, `tracing-subscriber` | 结构化异步日志输出，排查异步任务追踪极其直观 |
 
-#### 2\. 系统模块分层架构
+#### 2. 系统模块分层架构
 
-Plaintext
-
-```
+```text
 src/
-├── main.rs            # CLI 入口、定制 Tokio Runtime (worker_threads)、跨平台信号监听
-├── config.rs          # YAML 反序列化、环境变量展开 (${VAR}) 与合法性校验
-├── state.rs           # 任务运行状态、IP 历史比对与原子持久化缓存 (rename 机制)
-├── ip_fetcher/        # IP 探测引擎
-│   ├── mod.rs         # 统一 IP 获取 trait
-│   ├── remote.rs      # HTTP 请求探测 (绑定指定协议栈)
-│   └── interface.rs   # 本地网卡直接读取 (过滤 ULA、fe80:: 与临时隐私扩展)
-├── engine/            # HTTP Webhook 驱动引擎
-│   ├── client.rs      # 基于 rustls-tls-native-roots 的 Reqwest Client 单例封装
-│   ├── template.rs    # {{ipv4}}, {{ipv6}}, {{domain}} 占位符安全替换
-│   ├── requester.rs   # 构造并执行请求 (支持 Dry-Run 拦截)
-│   └── verifier.rs    # 基于状态码与 regex / contains 进行断言判断
-├── scheduler.rs       # 任务调度循环 (结合 CancellationToken 实现优雅退出与 SIGHUP 热重载)
-└── notification.rs    # 通用 Webhook 告警回调 (on_change / on_failure / on_recovery)
-``` 
+├── main.rs                 # 进程入口：CLI 解析、运行时构建、顶级生命周期编排
+├── cli.rs                  # 命令行参数模型与校验 (Clap Derive)
+├── config/                 # 配置领域模块
+│   ├── mod.rs              # 统一导出 Config 结构体与加载接口
+│   ├── parser.rs           # YAML 反序列化、环境变量展开 (${VAR})
+│   ├── model.rs            # 强类型配置实体定义 (Global, Interface, Task, Request)
+│   └── validator.rs        # 业务规则校验 (网卡名、重试周期、正则表达式等)
+├── provider/               # 预定义 DDNS 服务商注册中心
+│   └── mod.rs              # 内置 dynu, dynv6, duckdns, he, noip 模板与 CLI 查询
+├── lifecycle/              # 生命周期与停机管理
+│   ├── mod.rs              # 生命周期编排服务 (LifecycleManager)
+│   ├── signal.rs           # 跨平台信号监听器 (POSIX Unix Signal & Windows Console)
+│   └── task_manager.rs     # JoinHandle 集中追踪与排空超时控制器
+├── ip/                     # IP 嗅探与 DNS 核对引擎
+│   ├── mod.rs              # InterfaceIpResolver 调度接口与模块导出
+│   ├── dns.rs              # 基于 hickory-resolver 的云端 A/AAAA 记录核对引擎
+│   ├── remote.rs           # 基于协议栈强制绑定的远程 HTTP 探测器
+│   └── interface.rs        # 本地网卡直读与智能净化器 (过滤 ULA、fe80::、优先 SLAAC)
+├── engine/                 # HTTP Webhook 驱动引擎
+│   ├── mod.rs              # HttpEngine 外观服务
+│   ├── client.rs           # 基于 rustls-tls-native-roots 的 Client 构造与连接池
+│   ├── template.rs         # {{ipv4}}, {{ipv6}}, {{domain}} 占位符安全替换
+│   ├── executor.rs         # 请求构造与执行 (支持 Dry-Run 模式拦截)
+│   └── verifier.rs         # 响应状态码与正则/包含断言校验
+├── scheduler/              # 任务调度与状态机
+│   ├── mod.rs              # 调度集群服务 (SchedulerService)
+│   └── task.rs             # 接口探测协程 (InterfaceScheduler) 与单任务执行器 (TaskExecutor)
+├── persistence/            # 状态持久化
+│   ├── mod.rs              # StateStore 服务
+│   └── atomic_file.rs      # 基于临时文件与系统 Rename 的原子落盘保证
+├── notification/           # 通用通知系统
+│   ├── mod.rs              # NotificationDispatcher 通知分发器
+│   └── events.rs           # 变更、失败、恢复事件模型
+└── error.rs                # 领域强类型错误定义 (基于 thiserror)
+```
 
 ### 五、 异常防护与健壮性设计
 
 1.  **防抖与最小变更校验**：
+    在向远程发送请求前，检查 `current_ipv4 == cached_ipv4 && current_ipv6 == cached_ipv6`。若无变动、DNS 记录一致且未达到心跳阈值，直接跳过请求，杜绝 API 刷屏。
     
-    在向远程发送请求前，检查 `current_ipv4 == cached_ipv4 && current_ipv6 == cached_ipv6`。若无变动且未达到心跳阈值，直接跳过请求，杜绝 API 刷屏。
-    
-2.  **局部异常隔离与退避**：
-    
-    当 `task A` 遇到 DNS 超时或服务商 502 时，利用 `tokio::spawn` 隔离故障上下文，严禁崩溃进程，只打印结构化错误日志，并在下个周期按指数退避算法重试，不影响 `task B` 的正常运行。
+2.  **局部异常隔离与自适应退避**：
+    当某个任务遇到 DNS 超时或服务商 502 时，利用 `tokio::spawn` 隔离故障上下文，严禁崩溃进程。当且仅当 Update 失败且 DNS 不一致时将下一次周期缩短为 `retry_interval`，实现快速自愈与故障隔离。
     
 3.  **安全变量替换**：
-    
     若请求模板中包含了 `{{ipv4}}`，但该任务当前未开启 IPv4 或获取失败，引擎应直接中断本次 HTTP 请求并记录 Warn 日志，严禁将包含字面量 `{{ipv4}}` 的畸形 URL 发送给服务商。
     
 4.  **轻量静态交付**：
-    
-    利用 `x86_64-pc-windows-msvc` / `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` 进行静态编译，产物为一个几兆大小的单二进制文件，零系统动态依赖（纯 Rust 栈无需 OpenSSL），可直接丢到 Windows、Alpine Linux 或 ImmortalWrt 路由器中运行。
+    利用 `x86_64-pc-windows-msvc` / `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` 进行静态编译，产物为一个几兆大小的单二进制文件，零系统动态依赖（纯 Rust 栈无需 OpenSSL），可直接丢到 Windows、Alpine Linux 或 OpenWrt 路由器中运行。
 
 5.  **停机排空与原子落盘**：
-    
     接收到退出信号时，主控流程进入排空倒计时并广播 `CancellationToken`，保护正在进行的单次请求完整结束；状态持久化采用“临时文件写入 + 原子重命名 (Atomic Rename)”策略，杜绝因强制切断或断电引发的持久化文件损坏。

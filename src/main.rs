@@ -8,6 +8,7 @@ mod ip;
 mod lifecycle;
 mod notification;
 mod persistence;
+pub mod provider;
 mod scheduler;
 
 use clap::Parser;
@@ -23,14 +24,34 @@ use tracing_subscriber::EnvFilter;
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    // 0. Provider inspection commands (can run without config file)
+    if cli.list_providers {
+        print!("{}", provider::format_providers_list());
+        return ExitCode::SUCCESS;
+    }
+
+    if let Some(ref provider_name) = cli.show_provider {
+        match provider::format_provider_detail(provider_name) {
+            Ok(detail) => {
+                print!("{}", detail);
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     // 1. Check mode
     if cli.check {
         match load_config(&cli.config) {
-            Ok(cfg) => match validate_config(&cfg) {
+            Ok(mut cfg) => match validate_config(&mut cfg) {
                 Ok(()) => {
                     println!(
-                        "Configuration '{}' is valid. Tasks configured: {}",
+                        "Configuration '{}' is valid. Interfaces: {}, Tasks: {}",
                         cli.config.display(),
+                        cfg.interfaces.len(),
                         cfg.tasks.len()
                     );
                     return ExitCode::SUCCESS;
@@ -49,7 +70,7 @@ fn main() -> ExitCode {
 
     // 2. Load and validate config
     let config = match load_config(&cli.config) {
-        Ok(cfg) => match validate_config(&cfg) {
+        Ok(mut cfg) => match validate_config(&mut cfg) {
             Ok(()) => cfg,
             Err(e) => {
                 eprintln!("Configuration validation failed: {}", e);

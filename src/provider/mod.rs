@@ -1,0 +1,403 @@
+//! Predefined DDNS provider templates and registry.
+
+use crate::config::RequestConfig;
+
+/// Definition of a predefined DDNS service provider.
+#[derive(Debug, Clone)]
+pub struct Provider {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub description: &'static str,
+    pub website: &'static str,
+    pub requires_domain: bool,
+    pub required_args: &'static [&'static str],
+    pub optional_args: &'static [&'static str],
+    pub default_method: &'static str,
+    pub default_url: &'static str,
+    pub default_success_regex: Option<&'static str>,
+    pub default_success_contains: &'static [&'static str],
+    pub example_yaml: &'static str,
+}
+
+impl Provider {
+    /// Instantiate default RequestConfig for this provider.
+    pub fn default_request(&self) -> RequestConfig {
+        RequestConfig {
+            method: self.default_method.to_string(),
+            url: self.default_url.to_string(),
+            headers: Default::default(),
+            body: None,
+            success_regex: self.default_success_regex.map(|s| s.to_string()),
+            success_contains: self
+                .default_success_contains
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            tls_insecure: false,
+            proxy: None,
+        }
+    }
+}
+
+/// Static registry of built-in providers.
+pub static PROVIDERS: &[Provider] = &[
+    Provider {
+        name: "dynu",
+        aliases: &[],
+        description: "Dynu Systems DDNS (Dual-stack IPv4 & IPv6)",
+        website: "https://www.dynu.com",
+        requires_domain: true,
+        required_args: &["password"],
+        optional_args: &["username"],
+        default_method: "GET",
+        default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myip={{ipv4}}&myipv6={{ipv6}}&password={{password}}",
+        default_success_regex: Some("^(good|nochg)"),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "dynu-dualstack"
+    provider: "dynu"
+    domain: "yourname.freeddns.org"
+    args:
+      password: "${DYNU_PASSWORD}""#,
+    },
+    Provider {
+        name: "dynu-ipv4",
+        aliases: &[],
+        description: "Dynu Systems DDNS (IPv4 only)",
+        website: "https://www.dynu.com",
+        requires_domain: true,
+        required_args: &["password"],
+        optional_args: &["username"],
+        default_method: "GET",
+        default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myip={{ipv4}}&password={{password}}",
+        default_success_regex: Some("^(good|nochg)"),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "dynu-v4"
+    provider: "dynu-ipv4"
+    domain: "yourname.freeddns.org"
+    args:
+      password: "${DYNU_PASSWORD}""#,
+    },
+    Provider {
+        name: "dynu-ipv6",
+        aliases: &[],
+        description: "Dynu Systems DDNS (IPv6 only)",
+        website: "https://www.dynu.com",
+        requires_domain: true,
+        required_args: &["password"],
+        optional_args: &["username"],
+        default_method: "GET",
+        default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myipv6={{ipv6}}&password={{password}}",
+        default_success_regex: Some("^(good|nochg)"),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "dynu-v6"
+    provider: "dynu-ipv6"
+    domain: "yourname.freeddns.org"
+    args:
+      password: "${DYNU_PASSWORD}""#,
+    },
+    Provider {
+        name: "dynv6",
+        aliases: &[],
+        description: "dynv6 Free Dynamic DNS (Dual-stack IPv4 & IPv6)",
+        website: "https://dynv6.com",
+        requires_domain: true,
+        required_args: &["token"],
+        optional_args: &[],
+        default_method: "GET",
+        default_url: "https://dynv6.com/api/update?hostname={{domain}}&token={{token}}&ipv4={{ipv4}}&ipv6={{ipv6}}",
+        default_success_regex: Some("(?i)^(addresses updated|addresses unchanged|unchanged)"),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "dynv6-dualstack"
+    provider: "dynv6"
+    domain: "yourname.dynv6.net"
+    args:
+      token: "${DYNV6_TOKEN}""#,
+    },
+    Provider {
+        name: "dynv6-ipv4",
+        aliases: &[],
+        description: "dynv6 Free Dynamic DNS (IPv4 only)",
+        website: "https://dynv6.com",
+        requires_domain: true,
+        required_args: &["token"],
+        optional_args: &[],
+        default_method: "GET",
+        default_url: "https://dynv6.com/api/update?hostname={{domain}}&token={{token}}&ipv4={{ipv4}}",
+        default_success_regex: Some("(?i)^(addresses updated|addresses unchanged|unchanged)"),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "dynv6-v4"
+    provider: "dynv6-ipv4"
+    domain: "yourname.dynv6.net"
+    args:
+      token: "${DYNV6_TOKEN}""#,
+    },
+    Provider {
+        name: "dynv6-ipv6",
+        aliases: &[],
+        description: "dynv6 Free Dynamic DNS (IPv6 only)",
+        website: "https://dynv6.com",
+        requires_domain: true,
+        required_args: &["token"],
+        optional_args: &[],
+        default_method: "GET",
+        default_url: "https://dynv6.com/api/update?hostname={{domain}}&token={{token}}&ipv6={{ipv6}}",
+        default_success_regex: Some("(?i)^(addresses updated|addresses unchanged|unchanged)"),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "dynv6-v6"
+    provider: "dynv6-ipv6"
+    domain: "yourname.dynv6.net"
+    args:
+      token: "${DYNV6_TOKEN}""#,
+    },
+    Provider {
+        name: "duckdns",
+        aliases: &[],
+        description: "DuckDNS Free Dynamic DNS (Dual-stack IPv4 & IPv6)",
+        website: "https://www.duckdns.org",
+        requires_domain: true,
+        required_args: &["token"],
+        optional_args: &[],
+        default_method: "GET",
+        default_url: "https://www.duckdns.org/update?domains={{domain}}&token={{token}}&ip={{ipv4}}&ipv6={{ipv6}}",
+        default_success_regex: Some("^OK"),
+        default_success_contains: &["OK"],
+        example_yaml: r#"  - name: "duckdns-dualstack"
+    provider: "duckdns"
+    domain: "yourdomain"
+    args:
+      token: "${DUCKDNS_TOKEN}""#,
+    },
+    Provider {
+        name: "duckdns-ipv4",
+        aliases: &[],
+        description: "DuckDNS Free Dynamic DNS (IPv4 only)",
+        website: "https://www.duckdns.org",
+        requires_domain: true,
+        required_args: &["token"],
+        optional_args: &[],
+        default_method: "GET",
+        default_url: "https://www.duckdns.org/update?domains={{domain}}&token={{token}}&ip={{ipv4}}",
+        default_success_regex: Some("^OK"),
+        default_success_contains: &["OK"],
+        example_yaml: r#"  - name: "duckdns-v4"
+    provider: "duckdns-ipv4"
+    domain: "yourdomain"
+    args:
+      token: "${DUCKDNS_TOKEN}""#,
+    },
+    Provider {
+        name: "duckdns-ipv6",
+        aliases: &[],
+        description: "DuckDNS Free Dynamic DNS (IPv6 only)",
+        website: "https://www.duckdns.org",
+        requires_domain: true,
+        required_args: &["token"],
+        optional_args: &[],
+        default_method: "GET",
+        default_url: "https://www.duckdns.org/update?domains={{domain}}&token={{token}}&ipv6={{ipv6}}",
+        default_success_regex: Some("^OK"),
+        default_success_contains: &["OK"],
+        example_yaml: r#"  - name: "duckdns-v6"
+    provider: "duckdns-ipv6"
+    domain: "yourdomain"
+    args:
+      token: "${DUCKDNS_TOKEN}""#,
+    },
+    Provider {
+        name: "he",
+        aliases: &["hurricane-electric"],
+        description: "Hurricane Electric Dynamic DNS (IPv4)",
+        website: "https://dns.he.net",
+        requires_domain: true,
+        required_args: &["password"],
+        optional_args: &[],
+        default_method: "GET",
+        default_url: "https://dyn.dns.he.net/nic/update?hostname={{domain}}&password={{password}}&myip={{ipv4}}",
+        default_success_regex: Some("^(good|nochg)"),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "he-v4"
+    provider: "he"
+    domain: "yourname.dyn.he.net"
+    args:
+      password: "${HE_PASSWORD}""#,
+    },
+    Provider {
+        name: "noip",
+        aliases: &[],
+        description: "No-IP Dynamic Update Client HTTP API (IPv4)",
+        website: "https://www.noip.com",
+        requires_domain: true,
+        required_args: &["username", "password"],
+        optional_args: &[],
+        default_method: "GET",
+        default_url: "https://dynupdate.no-ip.com/nic/update?hostname={{domain}}&myip={{ipv4}}&username={{username}}&password={{password}}",
+        default_success_regex: Some("^(good|nochg)"),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "noip-v4"
+    provider: "noip"
+    domain: "yourname.ddns.net"
+    args:
+      username: "${NOIP_USER}"
+      password: "${NOIP_PASSWORD}""#,
+    },
+];
+
+/// Find a provider by name or alias (case-insensitive).
+pub fn get_provider(name: &str) -> Option<&'static Provider> {
+    let lower = name.trim().to_lowercase();
+    PROVIDERS.iter().find(|p| {
+        p.name.eq_ignore_ascii_case(&lower)
+            || p.aliases.iter().any(|a| a.eq_ignore_ascii_case(&lower))
+    })
+}
+
+/// Return all available providers.
+pub fn list_providers() -> &'static [Provider] {
+    PROVIDERS
+}
+
+/// Comma-separated list of supported provider names.
+pub fn supported_providers_str() -> String {
+    PROVIDERS
+        .iter()
+        .map(|p| p.name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Format the entire provider list as a human-readable summary for CLI output.
+pub fn format_providers_list() -> String {
+    let mut out = String::from("Available Predefined DDNS Providers:\n\n");
+    for (i, p) in PROVIDERS.iter().enumerate() {
+        let alias_str = if p.aliases.is_empty() {
+            String::new()
+        } else {
+            format!(" (aliases: {})", p.aliases.join(", "))
+        };
+        out.push_str(&format!("{}. {}{}\n", i + 1, p.name, alias_str));
+        out.push_str(&format!("   Description: {}\n", p.description));
+        out.push_str(&format!("   Website:     {}\n", p.website));
+        out.push_str(&format!("   URL:         {}\n", p.default_url));
+        out.push_str(&format!(
+            "   Method:      {} | Required Args: {}\n",
+            p.default_method,
+            if p.required_args.is_empty() {
+                "none".to_string()
+            } else {
+                p.required_args.join(", ")
+            }
+        ));
+        if let Some(reg) = p.default_success_regex {
+            out.push_str(&format!("   Success Reg: {}\n", reg));
+        }
+        out.push('\n');
+    }
+    out.push_str(
+        "Use 'rdns --provider <NAME>' to view complete details and YAML configuration examples.\n",
+    );
+    out
+}
+
+/// Format detailed information and ready-to-use YAML example for a specific provider.
+pub fn format_provider_detail(name: &str) -> Result<String, String> {
+    let p = get_provider(name).ok_or_else(|| {
+        format!(
+            "Error: Unknown provider '{}'.\nAvailable providers: {}\nUse 'rdns --list-providers' to see all available providers.",
+            name,
+            supported_providers_str()
+        )
+    })?;
+
+    let mut out = String::new();
+    out.push_str(&format!("Provider:     {}\n", p.name));
+    if !p.aliases.is_empty() {
+        out.push_str(&format!("Aliases:      {}\n", p.aliases.join(", ")));
+    }
+    out.push_str(&format!("Description:  {}\n", p.description));
+    out.push_str(&format!("Website:      {}\n", p.website));
+    out.push_str(&format!(
+        "Requires Domain: {}\n",
+        if p.requires_domain { "Yes" } else { "No" }
+    ));
+    out.push_str(&format!(
+        "Required Args:   {}\n",
+        if p.required_args.is_empty() {
+            "none".to_string()
+        } else {
+            p.required_args.join(", ")
+        }
+    ));
+    if !p.optional_args.is_empty() {
+        out.push_str(&format!(
+            "Optional Args:   {}\n",
+            p.optional_args.join(", ")
+        ));
+    }
+
+    out.push_str("\nDefault Request Template:\n");
+    out.push_str(&format!("  Method: {}\n", p.default_method));
+    out.push_str(&format!("  URL:    {}\n", p.default_url));
+    if let Some(reg) = p.default_success_regex {
+        out.push_str(&format!("  Success Regex:    {}\n", reg));
+    }
+    if !p.default_success_contains.is_empty() {
+        out.push_str(&format!(
+            "  Success Contains: {:?}\n",
+            p.default_success_contains
+        ));
+    }
+
+    out.push_str("\nExample Task Configuration:\n");
+    out.push_str("tasks:\n");
+    out.push_str(p.example_yaml);
+    out.push('\n');
+
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_provider_lookup_and_defaults() {
+        let dynu = get_provider("dynu").expect("dynu must exist");
+        assert_eq!(dynu.name, "dynu");
+        assert!(dynu.requires_domain);
+        assert_eq!(dynu.required_args, &["password"]);
+
+        let req = dynu.default_request();
+        assert_eq!(req.method, "GET");
+        assert!(req.url.contains("api.dynu.com"));
+        assert!(req.url.contains("{{domain}}"));
+        assert!(req.url.contains("{{password}}"));
+        assert_eq!(req.success_regex.as_deref(), Some("^(good|nochg)"));
+
+        // Case insensitivity
+        assert!(get_provider("DYNU").is_some());
+        assert!(get_provider("DynV6").is_some());
+        assert!(get_provider("duckdns").is_some());
+
+        // Alias lookup
+        let he = get_provider("hurricane-electric").expect("he alias must resolve");
+        assert_eq!(he.name, "he");
+
+        // Unknown
+        assert!(get_provider("non_existent_provider_xyz").is_none());
+    }
+
+    #[test]
+    fn test_formatting() {
+        let list_str = format_providers_list();
+        assert!(list_str.contains("dynu"));
+        assert!(list_str.contains("dynv6"));
+        assert!(list_str.contains("duckdns"));
+
+        let detail = format_provider_detail("dynu").expect("detail formatting succeeds");
+        assert!(detail.contains("Provider:     dynu"));
+        assert!(detail.contains("Example Task Configuration:"));
+
+        let err = format_provider_detail("invalid_xyz").unwrap_err();
+        assert!(err.contains("Unknown provider"));
+    }
+}

@@ -1,8 +1,10 @@
 //! IP address detection engine.
 
+mod dns;
 mod interface;
 mod remote;
 
+pub use dns::DnsResolver;
 pub use interface::InterfaceIpFetcher;
 pub use remote::RemoteIpFetcher;
 
@@ -11,14 +13,14 @@ use crate::error::IpFetchError;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
-/// Unified IP resolver instance configured for a specific task.
-pub struct TaskIpResolver {
+/// Unified IP resolver instance configured for a specific network interface profile.
+pub struct InterfaceIpResolver {
     v4_strategy: Option<IpStrategyConfig>,
     v6_strategy: Option<IpStrategyConfig>,
     remote_fetcher: RemoteIpFetcher,
 }
 
-impl TaskIpResolver {
+impl InterfaceIpResolver {
     pub fn new(
         v4_strategy: Option<IpStrategyConfig>,
         v6_strategy: Option<IpStrategyConfig>,
@@ -45,6 +47,12 @@ impl TaskIpResolver {
         }
     }
 
+    pub async fn resolve(&self) -> Result<(Option<Ipv4Addr>, Option<Ipv6Addr>), IpFetchError> {
+        let v4 = self.resolve_ipv4().await?;
+        let v6 = self.resolve_ipv6().await?;
+        Ok((v4, v6))
+    }
+
     pub async fn resolve_ipv4(&self) -> Result<Option<Ipv4Addr>, IpFetchError> {
         let strat = match self.v4_strategy {
             Some(ref s) if s.enabled => s,
@@ -61,6 +69,8 @@ impl TaskIpResolver {
                     strat.interface.clone(),
                     None,
                     None,
+                    None,
+                    false,
                     strat.allow_private,
                     false,
                 );
@@ -87,6 +97,8 @@ impl TaskIpResolver {
                     None,
                     strat.interface.clone(),
                     strat.ipv6_prefix.clone(),
+                    strat.ipv6_regex.clone(),
+                    strat.prefer_slaac,
                     false,
                     strat.allow_private,
                 );
