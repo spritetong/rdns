@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Cached historical state for a single task.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -18,11 +18,17 @@ pub struct TaskState {
     pub last_success_time: Option<u64>,
 }
 
+/// Persistence write request, optionally carrying an acknowledgment to support
+/// flush-and-wait semantics on shutdown and single-run modes.
+struct WriteMsg {
+    ack: Option<oneshot::Sender<()>>,
+}
+
 #[derive(Clone)]
 pub struct StateStore {
     path: PathBuf,
     states: Arc<RwLock<HashMap<String, TaskState>>>,
-    tx: Option<mpsc::UnboundedSender<()>>,
+    tx: Option<mpsc::UnboundedSender<WriteMsg>>,
 }
 
 impl StateStore {
@@ -53,12 +59,21 @@ impl StateStore {
     async fn run_writer(
         path: PathBuf,
         states: Arc<RwLock<HashMap<String, TaskState>>>,
-        mut rx: mpsc::UnboundedReceiver<()>,
+        mut rx: mpsc::UnboundedReceiver<WriteMsg>,
     ) {
-        while rx.recv().await.is_some() {
+        while let Some(head) = rx.recv().await {
+            let mut acks = Vec::new();
+            if let Some(ack) = head.ack {
+                acks.push(ack);
+            }
+
             // Debounce rapid bursts from concurrent tasks
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            while rx.try_recv().is_ok() {}
+            while let Ok(next) = rx.try_recv() {
+                if let Some(ack) = next.ack {
+                    acks.push(ack);
+                }
+            }
 
             let path_clone = path.clone();
             let states_clone = Arc::clone(&states);
@@ -66,6 +81,11 @@ impl StateStore {
                 Self::save_snapshot(&path_clone, &states_clone);
             })
             .await;
+
+            // Acknowledge all flushed requests once the snapshot is on disk
+            for ack in acks {
+                let _ = ack.send(());
+            }
         }
     }
 
@@ -109,13 +129,31 @@ impl StateStore {
         }
 
         if let Some(ref tx) = self.tx {
-            if tx.send(()).is_err() {
+            if tx.send(WriteMsg { ack: None }).is_err() {
                 // Fallback to synchronous save if background channel is closed
                 self.save();
             }
         } else {
             self.save();
         }
+    }
+
+    /// Persist all pending in-memory state synchronously and wait for completion.
+    ///
+    /// Ensures durability of state updates before process exit in `--once`/daemon
+    /// shutdown paths, where detached background tasks would otherwise be dropped.
+    pub async fn flush(&self) {
+        let Some(tx) = &self.tx else {
+            self.save();
+            return;
+        };
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if tx.send(WriteMsg { ack: Some(ack_tx) }).is_err() {
+            self.save();
+            return;
+        }
+        let _ = ack_rx.await;
     }
 
     /// Save state in-memory snapshot to disk atomically.
@@ -140,5 +178,54 @@ impl StateStore {
         } else {
             tracing::debug!(path = %path.display(), "State file atomically updated");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify `--once`-style exit durability: in-memory updates are persisted and
+    /// acknowledged even though the detached background writer is dropped on runtime exit.
+    #[tokio::test]
+    async fn test_flush_persists_pending_updates_before_exit() {
+        let dir = std::env::temp_dir().join(format!("rdns_state_flush_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        let store = StateStore::new(&path);
+        store.update("task-a", Some("1.2.3.4".into()), None, 1700000000);
+        store.flush().await;
+
+        let content = std::fs::read_to_string(&path).expect("state.json must exist after flush");
+        let map: HashMap<String, TaskState> = serde_json::from_str(&content).unwrap();
+        assert_eq!(map["task-a"].ipv4.as_deref(), Some("1.2.3.4"));
+        assert!(map["task-a"].last_success_time.is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Idempotent persistence across runs: a store reloaded from disk observes
+    /// the previously flushed state.
+    #[tokio::test]
+    async fn test_reload_observes_flushed_state() {
+        let dir = std::env::temp_dir().join(format!("rdns_state_reload_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        {
+            let store = StateStore::new(&path);
+            store.update("task-a", Some("198.51.100.7".into()), None, 1700000100);
+            store.flush().await;
+        }
+
+        let reloaded = StateStore::new(&path);
+        let state = reloaded.get("task-a").unwrap();
+        assert_eq!(state.ipv4.as_deref(), Some("198.51.100.7"));
+        assert_eq!(state.last_success_time, Some(1700000100));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

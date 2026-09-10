@@ -183,7 +183,7 @@ fn main() -> ExitCode {
             let lifecycle = Arc::new(LifecycleManager::new(config.global.shutdown_timeout));
             let scheduler = match SchedulerService::new(
                 &config,
-                state_store,
+                state_store.clone(),
                 Arc::clone(&lifecycle),
                 cli.dry_run,
             ) {
@@ -195,7 +195,11 @@ fn main() -> ExitCode {
             };
 
             tracing::info!(dry_run = cli.dry_run, "Executing single run cycle");
-            match scheduler.run_once().await {
+            let result = scheduler.run_once().await;
+            // Flush state persistence before process exit; the background writer is
+            // dropped when the runtime shuts down and would lose pending updates.
+            state_store.flush().await;
+            match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     tracing::error!(error = %e, "Single run completed with errors");
@@ -221,6 +225,8 @@ fn main() -> ExitCode {
                 };
 
                 let action = scheduler.run_daemon().await;
+                // Guarantee trailing state updates are persisted before exit or reload.
+                state_store.flush().await;
                 match action {
                     lifecycle::LifecycleAction::Shutdown => {
                         return ExitCode::SUCCESS;
