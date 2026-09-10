@@ -58,6 +58,18 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
         });
     }
 
+    let valid_levels = ["trace", "debug", "info", "warn", "error", "off"];
+    if !valid_levels.contains(&config.global.log_level.to_lowercase().as_str()) {
+        return Err(ConfigError::Validation {
+            field: "global.log_level".to_string(),
+            message: format!(
+                "Invalid log level '{}'; must be one of: {}",
+                config.global.log_level,
+                valid_levels.join(", ")
+            ),
+        });
+    }
+
     if let Some(ref dns) = config.global.dns_server {
         validate_dns_server(dns, "global.dns_server")?;
     }
@@ -744,5 +756,45 @@ mod tests {
 
         let err = validate_config(&mut config).unwrap_err();
         assert!(err.to_string().contains("Invalid interface regex pattern"));
+    }
+
+    #[test]
+    fn test_invalid_log_level_rejected() {
+        let mut config = Config {
+            global: crate::config::model::GlobalConfig {
+                log_level: "unsupported_level".to_string(),
+                ..Default::default()
+            },
+            interfaces: vec![InterfaceConfig {
+                name: "eth0".to_string(),
+                interval: None,
+                retry_interval: None,
+                dns_server: None,
+                ipv4: None,
+                ipv6: None,
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(RequestConfig {
+                    method: "GET".to_string(),
+                    url: "http://127.0.0.1".to_string(),
+                    headers: Default::default(),
+                    body: None,
+                    tls_insecure: false,
+                    proxy: None,
+                    success_contains: vec![],
+                    success_regex: None,
+                }),
+            }],
+        };
+
+        let err = validate_config(&mut config).unwrap_err();
+        assert!(err.to_string().contains("global.log_level"));
     }
 }

@@ -271,6 +271,65 @@ def run_tests():
             daemon_proc.kill()
             raise AssertionError('Daemon failed to shut down within timeout!')
 
+        # -------------------------------------------------------------------
+        # Test 7: Testing --no-state and --write-state options
+        # -------------------------------------------------------------------
+        print('\n[TEST 7] Testing --no-state and --write-state false options...')
+        if STATE_FILE.exists():
+            STATE_FILE.unlink()
+
+        # Run with --no-state
+        res_no_state = subprocess.run(
+            [str(binary), '--once', '-c', str(CONFIG_PATH), '--no-state'],
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding='utf-8',
+        )
+        assert res_no_state.returncode == 0, f'--no-state run failed: {res_no_state.stderr}'
+        assert not STATE_FILE.exists(), 'state.json must not exist when --no-state is specified'
+        print('  [PASS] --no-state ran successfully without creating state file')
+
+        # Run with --write-state false
+        res_write_false = subprocess.run(
+            [str(binary), '--once', '-c', str(CONFIG_PATH), '--write-state', 'false'],
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding='utf-8',
+        )
+        assert res_write_false.returncode == 0, f'--write-state false run failed: {res_write_false.stderr}'
+        assert not STATE_FILE.exists(), 'state.json must not exist when --write-state false is specified'
+        print('  [PASS] --write-state false ran successfully without creating state file')
+
+        # -------------------------------------------------------------------
+        # Test 8: Testing --log-level options
+        # -------------------------------------------------------------------
+        print('\n[TEST 8] Testing --log-level options...')
+        res_log_off = subprocess.run(
+            [str(binary), '--dry-run', '-c', str(CONFIG_PATH), '--log-level', 'off'],
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding='utf-8',
+        )
+        assert res_log_off.returncode == 0, f'--log-level off failed: {res_log_off.stderr}'
+        combined_off = res_log_off.stdout + res_log_off.stderr
+        assert 'INFO' not in combined_off, f'Logs should be silenced with --log-level off: {combined_off}'
+        print('  [PASS] --log-level off suppressed all log output')
+
+        res_log_info = subprocess.run(
+            [str(binary), '--dry-run', '-c', str(CONFIG_PATH), '-l', 'info'],
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding='utf-8',
+        )
+        assert res_log_info.returncode == 0, f'-l info failed: {res_log_info.stderr}'
+        combined_info = res_log_info.stdout + res_log_info.stderr
+        assert 'Starting RDNS client' in combined_info, f'Logs should appear with -l info: {combined_info}'
+        print('  [PASS] -l info emitted standard operational logs')
+
         print('\nALL FUNCTIONAL TESTS PASSED SUCCESSFULLY!\n')
 
     finally:

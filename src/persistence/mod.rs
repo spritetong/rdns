@@ -29,14 +29,25 @@ pub struct StateStore {
     path: PathBuf,
     states: Arc<RwLock<HashMap<String, TaskState>>>,
     tx: Option<mpsc::UnboundedSender<WriteMsg>>,
+    write_enabled: bool,
 }
 
 impl StateStore {
+    /// Create a StateStore with disk persistence writing enabled.
+    #[allow(dead_code)]
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
+        Self::new_with_write_flag(path, true)
+    }
+
+    /// Create a StateStore with explicit control over disk persistence writing.
+    ///
+    /// When `write_enabled` is false, in-memory state is maintained across task runs
+    /// for in-process idempotency, but no files are created or modified on disk.
+    pub fn new_with_write_flag<P: AsRef<Path>>(path: P, write_enabled: bool) -> Self {
         let path_buf = path.as_ref().to_path_buf();
         let states = Arc::new(RwLock::new(HashMap::new()));
 
-        let tx = if tokio::runtime::Handle::try_current().is_ok() {
+        let tx = if write_enabled && tokio::runtime::Handle::try_current().is_ok() {
             let (tx, rx) = mpsc::unbounded_channel();
             let bg_path = path_buf.clone();
             let bg_states = Arc::clone(&states);
@@ -50,9 +61,16 @@ impl StateStore {
             path: path_buf,
             states,
             tx,
+            write_enabled,
         };
         store.load();
         store
+    }
+
+    /// Whether writing state to disk is enabled.
+    #[allow(dead_code)]
+    pub fn is_write_enabled(&self) -> bool {
+        self.write_enabled
     }
 
     /// Background actor draining and debouncing write requests.
@@ -128,6 +146,10 @@ impl StateStore {
             );
         }
 
+        if !self.write_enabled {
+            return;
+        }
+
         if let Some(ref tx) = self.tx {
             if tx.send(WriteMsg { ack: None }).is_err() {
                 // Fallback to synchronous save if background channel is closed
@@ -143,6 +165,10 @@ impl StateStore {
     /// Ensures durability of state updates before process exit in `--once`/daemon
     /// shutdown paths, where detached background tasks would otherwise be dropped.
     pub async fn flush(&self) {
+        if !self.write_enabled {
+            return;
+        }
+
         let Some(tx) = &self.tx else {
             self.save();
             return;
@@ -158,6 +184,9 @@ impl StateStore {
 
     /// Save state in-memory snapshot to disk atomically.
     pub fn save(&self) {
+        if !self.write_enabled {
+            return;
+        }
         Self::save_snapshot(&self.path, &self.states);
     }
 
@@ -225,6 +254,35 @@ mod tests {
         let state = reloaded.get("task-a").unwrap();
         assert_eq!(state.ipv4.as_deref(), Some("198.51.100.7"));
         assert_eq!(state.last_success_time, Some(1700000100));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// When write persistence is disabled, in-memory state is maintained for in-process
+    /// deduplication, but no file is created or written to disk.
+    #[tokio::test]
+    async fn test_disabled_write_state_keeps_memory_without_disk_file() {
+        let dir = std::env::temp_dir().join(format!("rdns_state_disabled_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        let store = StateStore::new_with_write_flag(&path, false);
+        assert!(!store.is_write_enabled());
+
+        store.update("task-b", Some("203.0.113.1".into()), None, 1700000200);
+        // Verify in-memory state is immediately accessible
+        let mem_state = store
+            .get("task-b")
+            .expect("in-memory state must be present");
+        assert_eq!(mem_state.ipv4.as_deref(), Some("203.0.113.1"));
+
+        store.flush().await;
+        // Verify no file was written to disk
+        assert!(
+            !path.exists(),
+            "state.json must not exist when write is disabled"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -46,6 +46,82 @@ pub struct Cli {
     /// Override the path to the state persistence JSON file
     #[arg(short = 's', long = "state", value_name = "PATH")]
     pub state: Option<PathBuf>,
+
+    /// Control whether to write the state persistence file to disk (true/false)
+    #[arg(
+        long = "write-state",
+        visible_alias = "save-state",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
+    pub write_state: Option<bool>,
+
+    /// Disable writing the state persistence file to disk
+    #[arg(
+        long = "no-state",
+        visible_aliases = ["no-state-file", "no-save-state"]
+    )]
+    pub no_state: bool,
+
+    /// Log level filter (trace, debug, info, warn, error, off) [default: info]
+    #[arg(
+        short = 'l',
+        long = "log-level",
+        value_name = "LEVEL",
+        value_enum,
+        ignore_case = true
+    )]
+    pub log_level: Option<LogLevel>,
+}
+
+/// Supported logging levels for the application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Off,
+}
+
+impl LogLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LogLevel::Trace => "trace",
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+            LogLevel::Off => "off",
+        }
+    }
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl Cli {
+    /// Determines whether state file persistence to disk should be performed.
+    pub fn should_write_state(&self) -> bool {
+        if self.no_state {
+            return false;
+        }
+        self.write_state.unwrap_or(true)
+    }
+
+    /// Returns the configured log level or defaults to `LogLevel::Info`.
+    #[allow(dead_code)]
+    pub fn log_level(&self) -> LogLevel {
+        self.log_level.unwrap_or(LogLevel::Info)
+    }
 }
 
 fn parse_worker_threads(s: &str) -> Result<usize, String> {
@@ -80,5 +156,81 @@ mod tests {
     fn test_state_arg_parsed() {
         let cli = Cli::try_parse_from(["rdns", "--state", "/tmp/custom_state.json"]).unwrap();
         assert_eq!(cli.state, Some(PathBuf::from("/tmp/custom_state.json")));
+        assert!(cli.should_write_state());
+    }
+
+    #[test]
+    fn test_default_should_write_state_true() {
+        let cli = Cli::try_parse_from(["rdns"]).unwrap();
+        assert!(cli.should_write_state());
+    }
+
+    #[test]
+    fn test_no_state_flag_disables_writing() {
+        let cli = Cli::try_parse_from(["rdns", "--no-state"]).unwrap();
+        assert!(!cli.should_write_state());
+
+        let cli_alias = Cli::try_parse_from(["rdns", "--no-state-file"]).unwrap();
+        assert!(!cli_alias.should_write_state());
+
+        let cli_alias2 = Cli::try_parse_from(["rdns", "--no-save-state"]).unwrap();
+        assert!(!cli_alias2.should_write_state());
+    }
+
+    #[test]
+    fn test_write_state_option_parsing() {
+        let cli_false = Cli::try_parse_from(["rdns", "--write-state", "false"]).unwrap();
+        assert!(!cli_false.should_write_state());
+
+        let cli_zero = Cli::try_parse_from(["rdns", "--write-state", "0"]).unwrap();
+        assert!(!cli_zero.should_write_state());
+
+        let cli_true = Cli::try_parse_from(["rdns", "--write-state", "true"]).unwrap();
+        assert!(cli_true.should_write_state());
+
+        let cli_flag = Cli::try_parse_from(["rdns", "--write-state"]).unwrap();
+        assert!(cli_flag.should_write_state());
+
+        let cli_save = Cli::try_parse_from(["rdns", "--save-state", "false"]).unwrap();
+        assert!(!cli_save.should_write_state());
+    }
+
+    #[test]
+    fn test_default_log_level_is_info() {
+        let cli = Cli::try_parse_from(["rdns"]).unwrap();
+        assert_eq!(cli.log_level, None);
+        assert_eq!(cli.log_level(), LogLevel::Info);
+    }
+
+    #[test]
+    fn test_log_level_off_parsed() {
+        let cli = Cli::try_parse_from(["rdns", "--log-level", "off"]).unwrap();
+        assert_eq!(cli.log_level, Some(LogLevel::Off));
+        assert_eq!(cli.log_level(), LogLevel::Off);
+
+        let cli_short = Cli::try_parse_from(["rdns", "-l", "off"]).unwrap();
+        assert_eq!(cli_short.log_level, Some(LogLevel::Off));
+    }
+
+    #[test]
+    fn test_log_level_all_variants_case_insensitive() {
+        for (arg, expected) in [
+            ("trace", LogLevel::Trace),
+            ("DEBUG", LogLevel::Debug),
+            ("Info", LogLevel::Info),
+            ("WARN", LogLevel::Warn),
+            ("error", LogLevel::Error),
+            ("OFF", LogLevel::Off),
+        ] {
+            let cli = Cli::try_parse_from(["rdns", "-l", arg]).unwrap();
+            assert_eq!(cli.log_level, Some(expected));
+            assert_eq!(cli.log_level().as_str(), expected.as_str());
+        }
+    }
+
+    #[test]
+    fn test_log_level_invalid_value_fails() {
+        let res = Cli::try_parse_from(["rdns", "-l", "verbose"]);
+        assert!(res.is_err());
     }
 }

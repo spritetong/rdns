@@ -140,30 +140,23 @@ fn main() -> ExitCode {
     };
 
     // 3. Initialize logging
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.global.log_level));
+    let filter = if let Some(lvl) = cli.log_level {
+        EnvFilter::new(lvl.as_str())
+    } else {
+        EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(&config.global.log_level))
+    };
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "Starting RDNS client");
 
     // 4. Determine Tokio worker threads
-    let worker_threads = cli.worker_threads.or(config.global.worker_threads);
+    let worker_threads = cli
+        .worker_threads
+        .or(config.global.worker_threads)
+        .map(|t| t as u32);
 
-    let mut builder = tokio::runtime::Builder::new_multi_thread();
-    builder.enable_all();
-    if let Some(threads) = worker_threads {
-        if threads == 0 {
-            eprintln!("Worker threads must be greater than 0");
-            return ExitCode::FAILURE;
-        }
-        tracing::info!(
-            worker_threads = threads,
-            "Configuring custom worker threads count"
-        );
-        builder.worker_threads(threads);
-    }
-
-    let runtime = match builder.build() {
+    let runtime = match build_tokio_runtime(worker_threads) {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("Failed to build Tokio runtime: {}", e);
@@ -177,7 +170,14 @@ fn main() -> ExitCode {
             .state
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from("state.json"));
-        let state_store = StateStore::new(&state_path);
+        let write_state = cli.should_write_state();
+        if !write_state {
+            tracing::info!(
+                path = %state_path.display(),
+                "State persistence disk writing is disabled"
+            );
+        }
+        let state_store = StateStore::new_with_write_flag(&state_path, write_state);
 
         if cli.dry_run || cli.once {
             let lifecycle = Arc::new(LifecycleManager::new(config.global.shutdown_timeout));
@@ -261,4 +261,59 @@ fn main() -> ExitCode {
             }
         }
     })
+}
+
+pub(crate) fn build_tokio_runtime(
+    nb_worker_threads: Option<u32>,
+) -> std::io::Result<tokio::runtime::Runtime> {
+    let threads = nb_worker_threads.or_else(|| {
+        std::env::var("TOKIO_WORKER_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+    });
+
+    let mut builder = match threads {
+        Some(1) => {
+            tracing::info!("Initialized single-threaded (current_thread) Tokio runtime");
+            tokio::runtime::Builder::new_current_thread()
+        }
+        Some(n) => {
+            tracing::info!(
+                worker_threads = n,
+                "Initialized multi-threaded Tokio runtime with custom worker threads"
+            );
+            let mut b = tokio::runtime::Builder::new_multi_thread();
+            b.worker_threads(n as usize);
+            b
+        }
+        None => tokio::runtime::Builder::new_multi_thread(),
+    };
+
+    builder.enable_all().build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_tokio_runtime_single_thread() {
+        let rt = build_tokio_runtime(Some(1)).expect("must build current_thread runtime");
+        let res = rt.block_on(async { tokio::spawn(async { 42 }).await.unwrap() });
+        assert_eq!(res, 42);
+    }
+
+    #[test]
+    fn test_build_tokio_runtime_multi_thread() {
+        let rt = build_tokio_runtime(Some(2)).expect("must build multi_thread runtime");
+        let res = rt.block_on(async { tokio::spawn(async { 100 }).await.unwrap() });
+        assert_eq!(res, 100);
+    }
+
+    #[test]
+    fn test_build_tokio_runtime_default() {
+        let rt = build_tokio_runtime(None).expect("must build default runtime");
+        let res = rt.block_on(async { tokio::spawn(async { 200 }).await.unwrap() });
+        assert_eq!(res, 200);
+    }
 }
