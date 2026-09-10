@@ -3,11 +3,12 @@
 mod atomic_file;
 
 use atomic_file::write_atomic;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// Cached historical state for a single task.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -20,18 +21,52 @@ pub struct TaskState {
 #[derive(Clone)]
 pub struct StateStore {
     path: PathBuf,
-    states: Arc<Mutex<HashMap<String, TaskState>>>,
+    states: Arc<RwLock<HashMap<String, TaskState>>>,
+    tx: Option<mpsc::UnboundedSender<()>>,
 }
 
 impl StateStore {
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
         let path_buf = path.as_ref().to_path_buf();
+        let states = Arc::new(RwLock::new(HashMap::new()));
+
+        let tx = if tokio::runtime::Handle::try_current().is_ok() {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let bg_path = path_buf.clone();
+            let bg_states = Arc::clone(&states);
+            tokio::spawn(Self::run_writer(bg_path, bg_states, rx));
+            Some(tx)
+        } else {
+            None
+        };
+
         let store = Self {
             path: path_buf,
-            states: Arc::new(Mutex::new(HashMap::new())),
+            states,
+            tx,
         };
         store.load();
         store
+    }
+
+    /// Background actor draining and debouncing write requests.
+    async fn run_writer(
+        path: PathBuf,
+        states: Arc<RwLock<HashMap<String, TaskState>>>,
+        mut rx: mpsc::UnboundedReceiver<()>,
+    ) {
+        while rx.recv().await.is_some() {
+            // Debounce rapid bursts from concurrent tasks
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            while rx.try_recv().is_ok() {}
+
+            let path_clone = path.clone();
+            let states_clone = Arc::clone(&states);
+            let _ = tokio::task::spawn_blocking(move || {
+                Self::save_snapshot(&path_clone, &states_clone);
+            })
+            .await;
+        }
     }
 
     /// Load existing state from JSON file if available.
@@ -40,7 +75,7 @@ impl StateStore {
             && let Ok(content) = std::fs::read_to_string(&self.path)
             && let Ok(map) = serde_json::from_str::<HashMap<String, TaskState>>(&content)
         {
-            *self.states.lock() = map;
+            *self.states.write() = map;
             tracing::info!(
                 path = %self.path.display(),
                 "Loaded previous IP state records"
@@ -50,10 +85,10 @@ impl StateStore {
 
     /// Retrieve the current cached state for a task.
     pub fn get(&self, task_name: &str) -> Option<TaskState> {
-        self.states.lock().get(task_name).cloned()
+        self.states.read().get(task_name).cloned()
     }
 
-    /// Update state for a task and immediately flush to disk via atomic write.
+    /// Update state for a task and notify background worker for asynchronous disk persistence.
     pub fn update(
         &self,
         task_name: &str,
@@ -62,7 +97,7 @@ impl StateStore {
         timestamp: u64,
     ) {
         {
-            let mut map = self.states.lock();
+            let mut map = self.states.write();
             map.insert(
                 task_name.to_string(),
                 TaskState {
@@ -72,13 +107,25 @@ impl StateStore {
                 },
             );
         }
-        self.save();
+
+        if let Some(ref tx) = self.tx {
+            if tx.send(()).is_err() {
+                // Fallback to synchronous save if background channel is closed
+                self.save();
+            }
+        } else {
+            self.save();
+        }
     }
 
     /// Save state in-memory snapshot to disk atomically.
     pub fn save(&self) {
+        Self::save_snapshot(&self.path, &self.states);
+    }
+
+    fn save_snapshot(path: &Path, states: &RwLock<HashMap<String, TaskState>>) {
         let json_bytes = {
-            let map = self.states.lock();
+            let map = states.read();
             match serde_json::to_vec_pretty(&*map) {
                 Ok(bytes) => bytes,
                 Err(e) => {
@@ -88,10 +135,10 @@ impl StateStore {
             }
         };
 
-        if let Err(e) = write_atomic(&self.path, &json_bytes) {
-            tracing::error!(path = %self.path.display(), error = %e, "Failed to atomically save state file");
+        if let Err(e) = write_atomic(path, &json_bytes) {
+            tracing::error!(path = %path.display(), error = %e, "Failed to atomically save state file");
         } else {
-            tracing::debug!(path = %self.path.display(), "State file atomically updated");
+            tracing::debug!(path = %path.display(), "State file atomically updated");
         }
     }
 }

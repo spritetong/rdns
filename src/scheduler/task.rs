@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
+use parking_lot::Mutex;
+
 /// Shared context and dependencies for executing tasks.
 #[derive(Clone)]
 pub struct TaskContext {
@@ -20,6 +22,7 @@ pub struct TaskContext {
     pub dns_resolver: DnsResolver,
     pub dns_server: Option<String>,
     pub timeout: Duration,
+    pub normal_interval_secs: u64,
     pub dry_run: bool,
 }
 
@@ -42,14 +45,25 @@ pub struct InterfaceRunOutcome {
     pub has_error: bool,
 }
 
+#[derive(Default, Debug)]
+struct HeartbeatState {
+    last_attempt_time: Option<u64>,
+    failure_count: u32,
+}
+
 pub struct TaskExecutor {
     config: TaskConfig,
     ctx: TaskContext,
+    heartbeat_state: Mutex<HeartbeatState>,
 }
 
 impl TaskExecutor {
     pub fn new(config: TaskConfig, ctx: TaskContext) -> Self {
-        Self { config, ctx }
+        Self {
+            config,
+            ctx,
+            heartbeat_state: Mutex::new(HeartbeatState::default()),
+        }
     }
 
     pub fn name(&self) -> &str {
@@ -91,7 +105,19 @@ impl TaskExecutor {
             // TTL propagation cooldown: don't query DNS if updated within 60s
             let in_cooldown = cached
                 .last_success_time
-                .map(|t| now.saturating_sub(t) < 60)
+                .map(|t| {
+                    if now < t {
+                        tracing::warn!(
+                            task = %task_name,
+                            now,
+                            last_success = t,
+                            "System clock jumped backwards; bypassing cooldown"
+                        );
+                        false
+                    } else {
+                        now - t < 60
+                    }
+                })
                 .unwrap_or(false);
 
             if !in_cooldown {
@@ -130,17 +156,40 @@ impl TaskExecutor {
             }
         }
 
+        let mut is_heartbeat_attempt = false;
         if !need_update
             && let Some(force_interval) = self.config.force_update_interval
             && let Some(last_time) = cached.last_success_time
             && now.saturating_sub(last_time) >= force_interval
         {
-            need_update = true;
-            tracing::info!(
-                task = %task_name,
-                force_interval,
-                "Force update interval reached, executing update"
-            );
+            let hb = self.heartbeat_state.lock();
+            let backoff_secs = if hb.failure_count == 0 {
+                0
+            } else {
+                let shift = (hb.failure_count - 1).min(5);
+                (60u64 * (1u64 << shift)).min(self.ctx.normal_interval_secs)
+            };
+            let can_retry = match hb.last_attempt_time {
+                Some(last_attempt) => now.saturating_sub(last_attempt) >= backoff_secs,
+                None => true,
+            };
+            if can_retry {
+                need_update = true;
+                is_heartbeat_attempt = true;
+                tracing::info!(
+                    task = %task_name,
+                    force_interval,
+                    failure_count = hb.failure_count,
+                    "Force update interval reached, executing update"
+                );
+            } else {
+                tracing::info!(
+                    task = %task_name,
+                    failure_count = hb.failure_count,
+                    backoff_secs,
+                    "Heartbeat force update delayed due to exponential backoff"
+                );
+            }
         }
 
         // If dry_run is true, always execute to show the preview
@@ -185,6 +234,11 @@ impl TaskExecutor {
             .await
         {
             Ok(()) => {
+                {
+                    let mut hb = self.heartbeat_state.lock();
+                    hb.failure_count = 0;
+                    hb.last_attempt_time = None;
+                }
                 if !self.ctx.dry_run {
                     let old_ip = format!("v4: {:?}, v6: {:?}", cached.ipv4, cached.ipv6);
                     let new_ip = format!("v4: {:?}, v6: {:?}", v4_str, v6_str);
@@ -229,6 +283,16 @@ impl TaskExecutor {
                     error = %err_msg,
                     "Failed to execute DDNS update request"
                 );
+                if is_heartbeat_attempt {
+                    let mut hb = self.heartbeat_state.lock();
+                    hb.failure_count = hb.failure_count.saturating_add(1);
+                    hb.last_attempt_time = Some(now);
+                    tracing::warn!(
+                        task = %task_name,
+                        failure_count = hb.failure_count,
+                        "Recorded heartbeat failure for exponential backoff"
+                    );
+                }
                 if !self.ctx.dry_run {
                     self.ctx
                         .notifier
@@ -239,7 +303,7 @@ impl TaskExecutor {
                         .await;
                 }
 
-                // Check condition: update failed AND DNS is inconsistent
+                // Check condition: update failed AND DNS is inconsistent (or task has no domain)
                 let mut should_shorten = false;
                 if let Some(ref domain) = self.config.domain {
                     let dns_mismatch = if known_dns_mismatch {
@@ -281,6 +345,12 @@ impl TaskExecutor {
                             "Update failed but DNS record already matches actual IP: maintaining normal interval"
                         );
                     }
+                } else {
+                    tracing::warn!(
+                        task = %task_name,
+                        "Update failed for task without domain: requesting shortened retry interval"
+                    );
+                    should_shorten = true;
                 }
 
                 TaskRunOutcome {
@@ -326,7 +396,7 @@ impl InterfaceScheduler {
         &self.config.name
     }
 
-    /// Execute a single round of interface IP detection, driving all bound tasks.
+    /// Execute a single round of interface IP detection, driving all bound tasks concurrently.
     pub async fn run_round(&self) -> InterfaceRunOutcome {
         let iface_name = &self.config.name;
         tracing::info!(interface = %iface_name, "Starting IP resolution for interface");
@@ -344,7 +414,7 @@ impl InterfaceScheduler {
                     "Failed to resolve IP for interface"
                 );
                 return InterfaceRunOutcome {
-                    should_shorten_interval: false,
+                    should_shorten_interval: true,
                     has_error: true,
                 };
             }
@@ -357,21 +427,43 @@ impl InterfaceScheduler {
             "IP addresses resolved successfully for interface"
         );
 
+        let mut join_set = tokio::task::JoinSet::new();
+        for task in &self.tasks {
+            let t = Arc::clone(task);
+            join_set.spawn(async move {
+                (
+                    t.name().to_string(),
+                    t.execute_with_ip(v4_opt, v6_opt).await,
+                )
+            });
+        }
+
         let mut has_error = false;
         let mut should_shorten_interval = false;
-        for task in &self.tasks {
-            let outcome = task.execute_with_ip(v4_opt, v6_opt).await;
-            if outcome.should_shorten_interval {
-                should_shorten_interval = true;
-            }
-            if let Some(e) = outcome.error {
-                tracing::error!(
-                    interface = %iface_name,
-                    task = %task.name(),
-                    error = %e,
-                    "Task execution failed"
-                );
-                has_error = true;
+        while let Some(res) = join_set.join_next().await {
+            match res {
+                Ok((task_name, outcome)) => {
+                    if outcome.should_shorten_interval {
+                        should_shorten_interval = true;
+                    }
+                    if let Some(e) = outcome.error {
+                        tracing::error!(
+                            interface = %iface_name,
+                            task = %task_name,
+                            error = %e,
+                            "Task execution failed"
+                        );
+                        has_error = true;
+                    }
+                }
+                Err(join_err) => {
+                    tracing::error!(
+                        interface = %iface_name,
+                        error = %join_err,
+                        "Task panicked or was aborted"
+                    );
+                    has_error = true;
+                }
             }
         }
 
@@ -473,6 +565,7 @@ mod tests {
             dns_resolver,
             dns_server: None,
             timeout: Duration::from_millis(500),
+            normal_interval_secs: 60,
             dry_run: false,
         };
 
@@ -529,6 +622,7 @@ mod tests {
             dns_resolver,
             dns_server: None,
             timeout: Duration::from_millis(500),
+            normal_interval_secs: 60,
             dry_run: true,
         };
 
@@ -583,6 +677,7 @@ mod tests {
             dns_resolver,
             dns_server: None,
             timeout: Duration::from_millis(500),
+            normal_interval_secs: 60,
             dry_run: true,
         };
 
@@ -662,6 +757,7 @@ mod tests {
             dns_resolver,
             dns_server: None,
             timeout: Duration::from_millis(500),
+            normal_interval_secs: 60,
             dry_run: false,
         };
 
@@ -690,6 +786,124 @@ mod tests {
             .await;
 
         assert!(outcome.error.is_none(), "Heartbeat update should succeed");
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_no_domain_failure_shortens_interval() {
+        let tmp_dir = std::env::temp_dir().join(format!("rdns_test_nodom_{}", std::process::id()));
+        let state_path = tmp_dir.join("state.json");
+        let state_store = StateStore::new(&state_path);
+
+        let global = crate::config::GlobalConfig::default();
+        let engine = HttpEngine::new(&global).unwrap();
+        let notifier = NotificationDispatcher::new(None, engine.clone());
+        let dns_resolver = DnsResolver::new();
+
+        let ctx = TaskContext {
+            engine,
+            state_store,
+            notifier,
+            dns_resolver,
+            dns_server: None,
+            timeout: Duration::from_millis(500),
+            normal_interval_secs: 60,
+            dry_run: false,
+        };
+
+        let task_cfg = TaskConfig {
+            name: "test-nodom-fail".to_string(),
+            interface: None,
+            force_update_interval: None,
+            domain: None, // No domain
+            provider: None,
+            args: HashMap::new(),
+            request: Some(RequestConfig {
+                method: "GET".to_string(),
+                url: "http://127.0.0.1:1/unreachable".to_string(),
+                headers: HashMap::new(),
+                body: None,
+                success_regex: None,
+                success_contains: vec![],
+                tls_insecure: false,
+                proxy: None,
+            }),
+        };
+
+        let executor = TaskExecutor::new(task_cfg, ctx);
+        let outcome = executor
+            .execute_with_ip(Some("180.110.160.241".parse().unwrap()), None)
+            .await;
+
+        assert!(outcome.error.is_some(), "Update must fail");
+        assert!(
+            outcome.should_shorten_interval,
+            "Tasks without domain must shorten interval on update failure (S2)"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_failure_exponential_backoff() {
+        let tmp_dir =
+            std::env::temp_dir().join(format!("rdns_test_backoff_{}", std::process::id()));
+        let state_path = tmp_dir.join("state.json");
+        let state_store = StateStore::new(&state_path);
+
+        let ip_v4 = "192.168.1.100".to_string();
+        state_store.update("test-hb-backoff", Some(ip_v4.clone()), None, 100);
+
+        let global = crate::config::GlobalConfig::default();
+        let engine = HttpEngine::new(&global).unwrap();
+        let notifier = NotificationDispatcher::new(None, engine.clone());
+        let dns_resolver = DnsResolver::new();
+
+        let ctx = TaskContext {
+            engine,
+            state_store: state_store.clone(),
+            notifier,
+            dns_resolver,
+            dns_server: None,
+            timeout: Duration::from_millis(500),
+            normal_interval_secs: 300,
+            dry_run: false,
+        };
+
+        let task_cfg = TaskConfig {
+            name: "test-hb-backoff".to_string(),
+            interface: None,
+            force_update_interval: Some(10), // Triggers force update
+            domain: None,
+            provider: None,
+            args: HashMap::new(),
+            request: Some(RequestConfig {
+                method: "GET".to_string(),
+                url: "http://127.0.0.1:1/unreachable".to_string(), // will fail
+                headers: HashMap::new(),
+                body: None,
+                success_regex: None,
+                success_contains: vec![],
+                tls_insecure: false,
+                proxy: None,
+            }),
+        };
+
+        let executor = TaskExecutor::new(task_cfg, ctx);
+        let test_ip = Some("192.168.1.100".parse().unwrap());
+
+        // First run: force update attempted and fails
+        let out1 = executor.execute_with_ip(test_ip, None).await;
+        assert!(out1.error.is_some(), "First attempt should fail");
+        assert_eq!(executor.heartbeat_state.lock().failure_count, 1);
+
+        // Immediate next run: should be suppressed by backoff (60s delay)
+        let out2 = executor.execute_with_ip(test_ip, None).await;
+        assert!(
+            out2.error.is_none(),
+            "Immediate retry must be skipped due to backoff"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }

@@ -42,6 +42,10 @@ pub struct Cli {
     /// Number of Tokio runtime worker threads (1 for single-thread lightweight runtime)
     #[arg(short = 't', long = "worker-threads", value_parser = parse_worker_threads)]
     pub worker_threads: Option<usize>,
+
+    /// Override the path to the state persistence JSON file
+    #[arg(short = 's', long = "state", value_name = "PATH")]
+    pub state: Option<PathBuf>,
 }
 
 fn parse_worker_threads(s: &str) -> Result<usize, String> {
@@ -70,5 +74,11 @@ mod tests {
     fn test_worker_threads_positive_succeeds() {
         let cli = Cli::try_parse_from(["rdns", "-t", "4"]).unwrap();
         assert_eq!(cli.worker_threads, Some(4));
+    }
+
+    #[test]
+    fn test_state_arg_parsed() {
+        let cli = Cli::try_parse_from(["rdns", "--state", "/tmp/custom_state.json"]).unwrap();
+        assert_eq!(cli.state, Some(PathBuf::from("/tmp/custom_state.json")));
     }
 }

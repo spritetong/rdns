@@ -120,10 +120,21 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
                     }
                 }
                 "interface" => {
-                    if v4.interface.as_deref().unwrap_or("").is_empty() {
+                    let iface_pattern = v4.interface.as_deref().unwrap_or("");
+                    if iface_pattern.is_empty() {
                         return Err(ConfigError::Validation {
                             field: format!("interfaces[{}].ipv4.interface", iface.name),
-                            message: "Interface IPv4 source requires an interface name".to_string(),
+                            message: "Interface IPv4 source requires an interface name or pattern"
+                                .to_string(),
+                        });
+                    }
+                    if let Err(e) = Regex::new(iface_pattern) {
+                        return Err(ConfigError::Validation {
+                            field: format!("interfaces[{}].ipv4.interface", iface.name),
+                            message: format!(
+                                "Invalid interface regex pattern '{}': {}",
+                                iface_pattern, e
+                            ),
                         });
                     }
                 }
@@ -153,10 +164,29 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
                     }
                 }
                 "interface" => {
-                    if v6.interface.as_deref().unwrap_or("").is_empty() {
+                    let iface_pattern = v6.interface.as_deref().unwrap_or("");
+                    if iface_pattern.is_empty() {
                         return Err(ConfigError::Validation {
                             field: format!("interfaces[{}].ipv6.interface", iface.name),
-                            message: "Interface IPv6 source requires an interface name".to_string(),
+                            message: "Interface IPv6 source requires an interface name or pattern"
+                                .to_string(),
+                        });
+                    }
+                    if let Err(e) = Regex::new(iface_pattern) {
+                        return Err(ConfigError::Validation {
+                            field: format!("interfaces[{}].ipv6.interface", iface.name),
+                            message: format!(
+                                "Invalid interface regex pattern '{}': {}",
+                                iface_pattern, e
+                            ),
+                        });
+                    }
+                    if let Some(ref r) = v6.ipv6_regex
+                        && let Err(e) = Regex::new(r)
+                    {
+                        return Err(ConfigError::Validation {
+                            field: format!("interfaces[{}].ipv6.ipv6_regex", iface.name),
+                            message: format!("Invalid ipv6_regex pattern '{}': {}", r, e),
                         });
                     }
                 }
@@ -668,5 +698,51 @@ mod tests {
             err.to_string()
                 .contains("Force update interval must be greater than 0")
         );
+    }
+
+    #[test]
+    fn test_invalid_interface_regex_rejected() {
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "test-bad-regex".to_string(),
+                interval: Some(300),
+                retry_interval: None,
+                dns_server: None,
+                ipv4: Some(IpStrategyConfig {
+                    enabled: true,
+                    source: "interface".to_string(),
+                    urls: vec![],
+                    interface: Some("[unclosed-bracket".to_string()),
+                    ipv6_prefix: None,
+                    prefer_slaac: false,
+                    ipv6_regex: None,
+                    allow_private: false,
+                }),
+                ipv6: None,
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(RequestConfig {
+                    method: "GET".to_string(),
+                    url: "http://127.0.0.1".to_string(),
+                    headers: Default::default(),
+                    body: None,
+                    tls_insecure: false,
+                    proxy: None,
+                    success_contains: vec![],
+                    success_regex: None,
+                }),
+            }],
+        };
+
+        let err = validate_config(&mut config).unwrap_err();
+        assert!(err.to_string().contains("Invalid interface regex pattern"));
     }
 }

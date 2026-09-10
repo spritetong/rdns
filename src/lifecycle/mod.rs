@@ -3,9 +3,15 @@
 mod signal;
 mod task_manager;
 
-pub use signal::SignalListener;
+pub use signal::{ProcessSignal, SignalListener};
 pub use task_manager::TaskManager;
 use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleAction {
+    Shutdown,
+    Reload,
+}
 
 /// Lifecycle coordinator managing root cancellation and task draining.
 pub struct LifecycleManager {
@@ -39,27 +45,37 @@ impl LifecycleManager {
         &self.task_manager
     }
 
-    /// Wait for OS shutdown signal and coordinate graceful task termination.
-    pub async fn wait_and_shutdown(&self) {
-        match SignalListener::wait_shutdown_signal().await {
-            Ok(sig) => {
+    /// Wait for OS signal and coordinate graceful task termination or reload.
+    pub async fn wait_and_drain(&self) -> LifecycleAction {
+        let action = match SignalListener::wait_signal().await {
+            Ok(ProcessSignal::Shutdown(sig)) => {
                 tracing::info!(
                     signal = %sig,
                     "Received OS termination signal, initiating shutdown sequence"
                 );
+                LifecycleAction::Shutdown
+            }
+            Ok(ProcessSignal::Reload) => {
+                tracing::info!(
+                    "Received SIGHUP reload signal, draining tasks for configuration reload"
+                );
+                LifecycleAction::Reload
             }
             Err(e) => {
                 tracing::error!(
                     error = %e,
                     "Failed to listen for OS signals, initiating shutdown"
                 );
+                LifecycleAction::Shutdown
             }
-        }
+        };
 
         // Cancel all child tasks immediately
         self.root_token.cancel();
 
         // Drain all tasks with timeout
         self.task_manager.shutdown_all(self.shutdown_timeout).await;
+
+        action
     }
 }

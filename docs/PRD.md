@@ -271,7 +271,7 @@ tasks:
 | **异步协调与排空** | `tokio-util = { version = "0.7", features = ["rt"] }` | 提供 `CancellationToken` 实现各并发任务的优雅停机广播 |
 | **DNS 解析引擎** | `hickory-resolver = { version = "0.26.2", features = ["tokio"] }` | 纯 Rust 官方社区权威 DNS 解析标准库，支持 UDP/TCP 查询与系统/外部 DNS 解析 |
 | **HTTP 引擎** | `reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "socks"] }` | 基于 `rustls` 纯内存安全实现，跨平台纯静态编译；默认导入操作系统原生证书链，自动信任企业/系统根证书；支持 SOCKS5 代理 |
-| **命令行解析** | `clap = { version = "4", features = ["derive", "env"] }` | 强类型 CLI 解析，易于扩展 `--config`, `--once`, `--dry-run`, `--worker-threads` 等命令参数 |
+| **命令行解析** | `clap = { version = "4", features = ["derive", "env"] }` | 强类型 CLI 解析，易于扩展 `--config`, `--once`, `--dry-run`, `--worker-threads`, `--state` 等命令参数 |
 | **配置解析与展开** | `serde`, `serde_yaml`, `shellexpand` | 强类型结构体反序列化，错误提示精确到行号；支持 `${ENV_NAME}` 环境变量安全解析 |
 | **网卡 IP 嗅探** | `ifaddrsx = "0.4"` | 高性能跨平台（Windows/Linux/macOS）网卡与 IP 枚举，原生支持 Windows 友好网卡名称与 RFC 4291 EUI-64 SLAAC 识别 |
 | **文本与正则** | `regex` | 用于响应断言校验与 URL 变量模板替换 |
@@ -281,24 +281,24 @@ tasks:
 
 ```text
 src/
-├── main.rs                 # 进程入口：CLI 解析、运行时构建、顶级生命周期编排
-├── cli.rs                  # 命令行参数模型与校验 (Clap Derive)
+├── main.rs                 # 进程入口：CLI 解析、运行时构建、顶级生命周期编排 (支持 SIGHUP 热重载)
+├── cli.rs                  # 命令行参数模型与校验 (Clap Derive，支持 --state, -t, --check 等)
 ├── config/                 # 配置领域模块
 │   ├── mod.rs              # 统一导出 Config 结构体与加载接口
 │   ├── parser.rs           # YAML 反序列化、环境变量展开 (${VAR})
 │   ├── model.rs            # 强类型配置实体定义 (Global, Interface, Task, Request)
-│   └── validator.rs        # 业务规则校验 (网卡名、重试周期、正则表达式等)
+│   └── validator.rs        # 业务规则校验 (网卡名/正则、重试周期、正则表达式语法等)
 ├── provider/               # 预定义 DDNS 服务商注册中心
 │   └── mod.rs              # 内置 dynu, dynv6, duckdns, he, noip 模板与 CLI 查询
 ├── lifecycle/              # 生命周期与停机管理
-│   ├── mod.rs              # 生命周期编排服务 (LifecycleManager)
-│   ├── signal.rs           # 跨平台信号监听器 (POSIX Unix Signal & Windows Console)
+│   ├── mod.rs              # 生命周期编排服务 (LifecycleManager，支持 Drain 与 Reload)
+│   ├── signal.rs           # 跨平台信号监听器 (POSIX SIGINT/SIGTERM/SIGHUP & Windows Console)
 │   └── task_manager.rs     # JoinHandle 集中追踪与排空超时控制器
 ├── ip/                     # IP 嗅探与 DNS 核对引擎
-│   ├── mod.rs              # InterfaceIpResolver 调度接口与模块导出
+│   ├── mod.rs              # InterfaceIpResolver 双栈并发调度与单栈优雅降级
 │   ├── dns.rs              # 基于 hickory-resolver 的云端 A/AAAA 记录核对引擎
 │   ├── remote.rs           # 基于协议栈强制绑定的远程 HTTP 探测器
-│   └── interface.rs        # 本地网卡直读与智能净化器 (过滤 ULA、fe80::、优先 SLAAC)
+│   └── interface.rs        # 本地网卡直读与智能净化器 (过滤 ULA、fe80::、RFC 4941 临时地址，优先稳定地址/SLAAC)
 ├── engine/                 # HTTP Webhook 驱动引擎
 │   ├── mod.rs              # HttpEngine 外观服务
 │   ├── client.rs           # 基于 rustls-tls-native-roots 的 Client 构造与连接池
@@ -307,9 +307,9 @@ src/
 │   └── verifier.rs         # 响应状态码与正则/包含断言校验
 ├── scheduler/              # 任务调度与状态机
 │   ├── mod.rs              # 调度集群服务 (SchedulerService)
-│   └── task.rs             # 接口探测协程 (InterfaceScheduler) 与单任务执行器 (TaskExecutor)
+│   └── task.rs             # 接口探测协程 (InterfaceScheduler) 与单任务执行器 (TaskExecutor，支持 JoinSet 并发、心跳退避)
 ├── persistence/            # 状态持久化
-│   ├── mod.rs              # StateStore 服务
+│   ├── mod.rs              # StateStore 服务 (Channel Actor 异步非阻塞落盘与读写分离)
 │   └── atomic_file.rs      # 基于临时文件与系统 Rename 的原子落盘保证
 ├── notification/           # 通用通知系统
 │   ├── mod.rs              # NotificationDispatcher 通知分发器
@@ -323,13 +323,22 @@ src/
     在向远程发送请求前，检查 `current_ipv4 == cached_ipv4 && current_ipv6 == cached_ipv6`。若无变动、DNS 记录一致且未达到心跳阈值，直接跳过请求，杜绝 API 刷屏。
     
 2.  **局部异常隔离与自适应退避**：
-    当某个任务遇到 DNS 超时或服务商 502 时，利用 `tokio::spawn` 隔离故障上下文，严禁崩溃进程。当且仅当 Update 失败且 DNS 不一致时将下一次周期缩短为 `retry_interval`，实现快速自愈与故障隔离。
+    每个接口内部绑定的多任务采用 `tokio::task::JoinSet` 并发驱动，单任务慢 I/O 不会阻塞同接口其他任务。当任务更新失败且 DNS 记录不一致（或无 domain 任务）时，下一次轮询自动切入 `retry_interval` 快速重试；当心跳保活强制更新失败时，启用指数退避（`60 * 2^(fail-1)` 秒，封顶于正常周期），防止服务商宕机时每轮死刷。
     
-3.  **安全变量替换**：
+3.  **双栈独立探测与单栈优雅降级**：
+    IPv4 与 IPv6 探测采用 `tokio::join!` 并发发起。当某一协议栈因上游路由或网络波动暂时失效时，只要另一协议栈探测成功，即以降级模式驱动相应单栈更新任务，记录 Warning 日志而非粗暴中断整个接口轮询。
+
+4.  **RFC 4941 临时 IPv6 地址过滤与稳定地址优先**：
+    智能识别 IPv6 Privacy Extensions 生成的短期外发临时地址（Universal/Local 掩码 `0x02` 为 0 且非 EUI-64 / 静态 DHCP），优先选用静态、DHCPv6 或 EUI-64 SLAAC 稳定地址作为入站解析目标，仅在宿主机纯隐私地址模式下回退选用。
+
+5.  **NTP 时钟回拨保护**：
+    DNS 查询防抖冷却期支持单调时钟保护。若宿主机发生 NTP 时钟跳变导致当前时间小于上次成功时间，主动绕过冷却阻断并记录 Warning 日志，防止系统陷入无限防抖休眠。
+
+6.  **安全变量替换**：
     若请求模板中包含了 `{{ipv4}}`，但该任务当前未开启 IPv4 或获取失败，引擎应直接中断本次 HTTP 请求并记录 Warn 日志，严禁将包含字面量 `{{ipv4}}` 的畸形 URL 发送给服务商。
     
-4.  **轻量静态交付**：
+7.  **轻量静态交付**：
     利用 `x86_64-pc-windows-msvc` / `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` 进行静态编译，产物为一个几兆大小的单二进制文件，零系统动态依赖（纯 Rust 栈无需 OpenSSL），可直接丢到 Windows、Alpine Linux 或 OpenWrt 路由器中运行。
 
-5.  **停机排空与原子落盘**：
-    接收到退出信号时，主控流程进入排空倒计时并广播 `CancellationToken`，保护正在进行的单次请求完整结束；状态持久化采用“临时文件写入 + 原子重命名 (Atomic Rename)”策略，杜绝因强制切断或断电引发的持久化文件损坏。
+8.  **非阻塞异步状态持久化与原子落盘**：
+    持久化存储采用 Channel Actor 异步读写分离架构，任务更新内存快照后立即返回，由后台 Worker 合并防抖并移交 `spawn_blocking` 执行临时文件原子重命名（Atomic Rename），彻底隔绝慢磁盘 I/O 阻塞异步调度循环。接收到停机信号时触发排空与最终保存，杜绝持久化文件损坏。

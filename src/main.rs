@@ -48,6 +48,58 @@ fn main() -> ExitCode {
         match load_config(&cli.config) {
             Ok(mut cfg) => match validate_config(&mut cfg) {
                 Ok(()) => {
+                    let host_interfaces = match ifaddrsx::get_interfaces(false) {
+                        Ok(ifaces) => ifaces,
+                        Err(e) => {
+                            eprintln!("Failed to enumerate host network interfaces: {}", e);
+                            return ExitCode::FAILURE;
+                        }
+                    };
+
+                    let mut all_matched = true;
+                    for iface in &cfg.interfaces {
+                        if let Some(ref v4) = iface.ipv4
+                            && v4.enabled
+                            && v4.source == "interface"
+                        {
+                            let pattern = v4.interface.as_deref().unwrap_or(".*");
+                            if let Ok(reg) = regex::Regex::new(pattern) {
+                                let matched = host_interfaces.iter().any(|hi| {
+                                    reg.is_match(&hi.name) || reg.is_match(hi.friendly_name())
+                                });
+                                if !matched {
+                                    eprintln!(
+                                        "Interface validation failed: interface '{}' IPv4 pattern '{}' matched no host network interfaces",
+                                        iface.name, pattern
+                                    );
+                                    all_matched = false;
+                                }
+                            }
+                        }
+                        if let Some(ref v6) = iface.ipv6
+                            && v6.enabled
+                            && v6.source == "interface"
+                        {
+                            let pattern = v6.interface.as_deref().unwrap_or(".*");
+                            if let Ok(reg) = regex::Regex::new(pattern) {
+                                let matched = host_interfaces.iter().any(|hi| {
+                                    reg.is_match(&hi.name) || reg.is_match(hi.friendly_name())
+                                });
+                                if !matched {
+                                    eprintln!(
+                                        "Interface validation failed: interface '{}' IPv6 pattern '{}' matched no host network interfaces",
+                                        iface.name, pattern
+                                    );
+                                    all_matched = false;
+                                }
+                            }
+                        }
+                    }
+
+                    if !all_matched {
+                        return ExitCode::FAILURE;
+                    }
+
                     println!(
                         "Configuration '{}' is valid. Interfaces: {}, Tasks: {}",
                         cli.config.display(),
@@ -121,23 +173,27 @@ fn main() -> ExitCode {
 
     // 5. Execute within Tokio runtime
     runtime.block_on(async {
-        let lifecycle = Arc::new(LifecycleManager::new(config.global.shutdown_timeout));
-        let state_store = StateStore::new("state.json");
-
-        let scheduler = match SchedulerService::new(
-            &config,
-            state_store,
-            Arc::clone(&lifecycle),
-            cli.dry_run,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to initialize scheduler service");
-                return ExitCode::FAILURE;
-            }
-        };
+        let state_path = cli
+            .state
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("state.json"));
+        let state_store = StateStore::new(&state_path);
 
         if cli.dry_run || cli.once {
+            let lifecycle = Arc::new(LifecycleManager::new(config.global.shutdown_timeout));
+            let scheduler = match SchedulerService::new(
+                &config,
+                state_store,
+                Arc::clone(&lifecycle),
+                cli.dry_run,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to initialize scheduler service");
+                    return ExitCode::FAILURE;
+                }
+            };
+
             tracing::info!(dry_run = cli.dry_run, "Executing single run cycle");
             match scheduler.run_once().await {
                 Ok(()) => ExitCode::SUCCESS,
@@ -147,9 +203,56 @@ fn main() -> ExitCode {
                 }
             }
         } else {
-            // Default or --daemon: long-running service
-            scheduler.run_daemon().await;
-            ExitCode::SUCCESS
+            // Default or --daemon: long-running service with SIGHUP reload support
+            let mut current_config = config;
+            loop {
+                let lifecycle = Arc::new(LifecycleManager::new(current_config.global.shutdown_timeout));
+                let scheduler = match SchedulerService::new(
+                    &current_config,
+                    state_store.clone(),
+                    Arc::clone(&lifecycle),
+                    cli.dry_run,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to initialize scheduler service");
+                        return ExitCode::FAILURE;
+                    }
+                };
+
+                let action = scheduler.run_daemon().await;
+                match action {
+                    lifecycle::LifecycleAction::Shutdown => {
+                        return ExitCode::SUCCESS;
+                    }
+                    lifecycle::LifecycleAction::Reload => {
+                        tracing::info!(
+                            path = %cli.config.display(),
+                            "Received SIGHUP signal; reloading configuration"
+                        );
+                        match load_config(&cli.config) {
+                            Ok(mut new_cfg) => match validate_config(&mut new_cfg) {
+                                Ok(()) => {
+                                    tracing::info!("Configuration reloaded and validated successfully");
+                                    current_config = new_cfg;
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        error = %e,
+                                        "Reloaded configuration failed validation; keeping current configuration"
+                                    );
+                                }
+                            },
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    "Failed to read reloaded configuration; keeping current configuration"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     })
 }

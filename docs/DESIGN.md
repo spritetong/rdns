@@ -154,22 +154,29 @@ graph TD
 
 ### 3.2 跨平台信号监听实现抽象 (`lifecycle/signal.rs`)
 
-统一屏蔽不同操作系统信号处理的底层差异：
+统一屏蔽不同操作系统信号处理的底层差异，并支持 POSIX `SIGHUP` 配置平滑热重载：
 
 ```rust
+pub enum ProcessSignal {
+    Shutdown(String),
+    Reload,
+}
+
 pub struct SignalListener;
 
 impl SignalListener {
-    pub async fn wait_shutdown_signal() -> Result<String, std::io::Error> {
+    pub async fn wait_signal() -> Result<ProcessSignal, std::io::Error> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
             let mut sigint = signal(SignalKind::interrupt())?;
             let mut sigterm = signal(SignalKind::terminate())?;
+            let mut sighup = signal(SignalKind::hangup())?;
 
             tokio::select! {
-                _ = sigint.recv() => Ok("SIGINT".to_string()),
-                _ = sigterm.recv() => Ok("SIGTERM".to_string()),
+                _ = sigint.recv() => Ok(ProcessSignal::Shutdown("SIGINT".to_string())),
+                _ = sigterm.recv() => Ok(ProcessSignal::Shutdown("SIGTERM".to_string())),
+                _ = sighup.recv() => Ok(ProcessSignal::Reload),
             }
         }
 
@@ -183,11 +190,11 @@ impl SignalListener {
             let mut c_logoff = ctrl_logoff()?;
 
             tokio::select! {
-                _ = c_c.recv() => Ok("CTRL_C".to_string()),
-                _ = c_break.recv() => Ok("CTRL_BREAK".to_string()),
-                _ = c_close.recv() => Ok("CTRL_CLOSE".to_string()),
-                _ = c_shutdown.recv() => Ok("CTRL_SHUTDOWN".to_string()),
-                _ = c_logoff.recv() => Ok("CTRL_LOGOFF".to_string()),
+                _ = c_c.recv() => Ok(ProcessSignal::Shutdown("CTRL_C".to_string())),
+                _ = c_break.recv() => Ok(ProcessSignal::Shutdown("CTRL_BREAK".to_string())),
+                _ = c_close.recv() => Ok(ProcessSignal::Shutdown("CTRL_CLOSE".to_string())),
+                _ = c_shutdown.recv() => Ok(ProcessSignal::Shutdown("CTRL_SHUTDOWN".to_string())),
+                _ = c_logoff.recv() => Ok(ProcessSignal::Shutdown("CTRL_LOGOFF".to_string())),
             }
         }
     }

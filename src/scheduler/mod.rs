@@ -7,7 +7,7 @@ pub use task::{InterfaceScheduler, TaskExecutor};
 use crate::config::Config;
 use crate::engine::HttpEngine;
 use crate::error::RdnsError;
-use crate::lifecycle::LifecycleManager;
+use crate::lifecycle::{LifecycleAction, LifecycleManager};
 use crate::notification::NotificationDispatcher;
 use crate::persistence::StateStore;
 use std::collections::HashMap;
@@ -50,6 +50,9 @@ impl SchedulerService {
             let dns_server = iface_cfg
                 .and_then(|i| i.dns_server.clone())
                 .or_else(|| config.global.dns_server.clone());
+            let normal_interval_secs = iface_cfg
+                .and_then(|i| i.interval)
+                .unwrap_or(default_interval);
 
             let task_ctx = task::TaskContext {
                 engine: engine.clone(),
@@ -58,6 +61,7 @@ impl SchedulerService {
                 dns_resolver: dns_resolver.clone(),
                 dns_server,
                 timeout,
+                normal_interval_secs,
                 dry_run,
             };
             let executor = Arc::new(TaskExecutor::new(task_cfg.clone(), task_ctx));
@@ -105,8 +109,8 @@ impl SchedulerService {
         }
     }
 
-    /// Spawn each interface IP task into the TaskManager and wait for OS shutdown signal.
-    pub async fn run_daemon(&self) {
+    /// Spawn each interface IP task into the TaskManager and wait for OS signal.
+    pub async fn run_daemon(&self) -> LifecycleAction {
         for s in &self.interfaces {
             let iface_clone = Arc::clone(s);
             let child_token = self.lifecycle.child_token();
@@ -117,10 +121,12 @@ impl SchedulerService {
             });
         }
 
-        tracing::info!(
-            "All interface tasks spawned, daemon running. Awaiting OS shutdown signal..."
-        );
-        self.lifecycle.wait_and_shutdown().await;
-        tracing::info!("RDNS daemon stopped cleanly");
+        tracing::info!("All interface tasks spawned, daemon running. Awaiting OS signal...");
+        let action = self.lifecycle.wait_and_drain().await;
+        match action {
+            LifecycleAction::Shutdown => tracing::info!("RDNS daemon stopped cleanly"),
+            LifecycleAction::Reload => tracing::info!("RDNS daemon drained for reload"),
+        }
+        action
     }
 }
