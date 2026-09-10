@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     // 0. Provider inspection commands (can run without config file)
     if cli.list_providers {
@@ -138,6 +138,13 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // Override `no_state` flag
+    if !cli.no_state
+        && let Some(no_state) = config.global.no_state
+    {
+        cli.no_state = no_state;
+    }
 
     // 3. Initialize logging
     let filter = if let Some(lvl) = cli.log_level {

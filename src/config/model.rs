@@ -55,6 +55,8 @@ pub struct GlobalConfig {
 
     pub worker_threads: Option<usize>,
 
+    pub no_state: Option<bool>,
+
     #[serde(default = "default_log_level")]
     pub log_level: String,
 
@@ -92,6 +94,7 @@ impl Default for GlobalConfig {
             timeout: default_timeout(),
             shutdown_timeout: default_shutdown_timeout(),
             worker_threads: None,
+            no_state: None,
             log_level: default_log_level(),
             proxy: None,
             dns_server: None,
