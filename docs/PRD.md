@@ -73,7 +73,7 @@ Abstracts every update into a parameterized HTTP request, complemented by built-
   * Tasks can specify `provider: "dynu"` (or `dynv6`, `duckdns`, `he`, `noip`, etc.).
   * **Automatic Template Assembly & Merging**: Provider defaults populate the base `RequestConfig`. If a user also provides a task `request` block, it is merged into the provider template as overrides—allowing selective customization of `proxy`, `tls_insecure`, `headers` (merged key-by-key), `method`, `url`, `body`, or assertions without duplicating boilerplate.
   * **Parameter Validation**: Verifies mandatory parameters on startup (e.g., `password` for Dynu, `token` for dynv6), failing fast with clear instructions if any are missing.
-  * **Built-in Providers**: `dynu` (dual-stack), `dynu-ipv4`, `dynu-ipv6`, `dynv6` (dual-stack), `dynv6-ipv4`, `dynv6-ipv6`, `duckdns` (dual-stack), `duckdns-ipv4`, `duckdns-ipv6`, `he` (Hurricane Electric), `noip`, etc.
+  * **Built-in Providers**: `dynu` (dual-stack), `dynu-ipv4`, `dynu-ipv6`, `dynv6` (dual-stack), `dynv6-ipv4`, `dynv6-ipv6`, `duckdns` (dual-stack), `duckdns-ipv4`, `duckdns-ipv6`, `he` (Hurricane Electric), `noip`, `cloudflare-v4` (Cloudflare DNS API v4).
 * **CLI Provider Introspection (`--list-providers` / `--provider`)**:
   * `rdns --list-providers`: Lists all built-in providers, websites, default templates, and required arguments.
   * `rdns --provider <NAME>` (alias `--show-provider <NAME>`): Displays full templates, argument explanations, and copy-pasteable YAML task examples. Works independently without requiring a config file.

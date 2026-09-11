@@ -14,6 +14,8 @@ pub struct Provider {
     pub optional_args: &'static [&'static str],
     pub default_method: &'static str,
     pub default_url: &'static str,
+    pub default_headers: &'static [(&'static str, &'static str)],
+    pub default_body: Option<&'static str>,
     pub default_success_regex: Option<&'static str>,
     pub default_success_contains: &'static [&'static str],
     pub example_yaml: &'static str,
@@ -25,8 +27,12 @@ impl Provider {
         RequestConfig {
             method: Some(self.default_method.to_string()),
             url: Some(self.default_url.to_string()),
-            headers: Default::default(),
-            body: None,
+            headers: self
+                .default_headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            body: self.default_body.map(str::to_string),
             success_regex: self.default_success_regex.map(|s| s.to_string()),
             success_contains: Some(
                 self.default_success_contains
@@ -52,6 +58,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &["username"],
         default_method: "GET",
         default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myip={{ipv4}}&myipv6={{ipv6}}&password={{password}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("^(good|nochg)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "dynu-dualstack"
@@ -70,6 +78,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &["username"],
         default_method: "GET",
         default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myip={{ipv4}}&myipv6=no&password={{password}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("^(good|nochg)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "dynu-v4"
@@ -88,6 +98,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &["username"],
         default_method: "GET",
         default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&myip=no&myipv6={{ipv6}}&password={{password}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("^(good|nochg)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "dynu-v6"
@@ -106,6 +118,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &[],
         default_method: "GET",
         default_url: "https://dynv6.com/api/update?hostname={{domain}}&token={{token}}&ipv4={{ipv4}}&ipv6={{ipv6}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("(?i)^(addresses updated|addresses unchanged|unchanged)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "dynv6-dualstack"
@@ -124,6 +138,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &[],
         default_method: "GET",
         default_url: "https://dynv6.com/api/update?hostname={{domain}}&token={{token}}&ipv4={{ipv4}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("(?i)^(addresses updated|addresses unchanged|unchanged)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "dynv6-v4"
@@ -142,6 +158,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &[],
         default_method: "GET",
         default_url: "https://dynv6.com/api/update?hostname={{domain}}&token={{token}}&ipv6={{ipv6}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("(?i)^(addresses updated|addresses unchanged|unchanged)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "dynv6-v6"
@@ -160,6 +178,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &[],
         default_method: "GET",
         default_url: "https://www.duckdns.org/update?domains={{domain}}&token={{token}}&ip={{ipv4}}&ipv6={{ipv6}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("^OK"),
         default_success_contains: &["OK"],
         example_yaml: r#"  - name: "duckdns-dualstack"
@@ -178,6 +198,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &[],
         default_method: "GET",
         default_url: "https://www.duckdns.org/update?domains={{domain}}&token={{token}}&ip={{ipv4}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("^OK"),
         default_success_contains: &["OK"],
         example_yaml: r#"  - name: "duckdns-v4"
@@ -196,6 +218,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &[],
         default_method: "GET",
         default_url: "https://www.duckdns.org/update?domains={{domain}}&token={{token}}&ipv6={{ipv6}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("^OK"),
         default_success_contains: &["OK"],
         example_yaml: r#"  - name: "duckdns-v6"
@@ -214,6 +238,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &[],
         default_method: "GET",
         default_url: "https://dyn.dns.he.net/nic/update?hostname={{domain}}&password={{password}}&myip={{ipv4}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("^(good|nochg)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "he-v4"
@@ -232,6 +258,8 @@ pub static PROVIDERS: &[Provider] = &[
         optional_args: &[],
         default_method: "GET",
         default_url: "https://dynupdate.no-ip.com/nic/update?hostname={{domain}}&myip={{ipv4}}&username={{username}}&password={{password}}",
+        default_headers: &[],
+        default_body: None,
         default_success_regex: Some("^(good|nochg)"),
         default_success_contains: &[],
         example_yaml: r#"  - name: "noip-v4"
@@ -240,6 +268,82 @@ pub static PROVIDERS: &[Provider] = &[
     args:
       username: "${NOIP_USER}"
       password: "${NOIP_PASSWORD}""#,
+    },
+    Provider {
+        name: "cloudflare",
+        aliases: &["cloudflare-dualstack", "cf-dualstack", "cf"],
+        description: "Cloudflare DNS API v4 (Dual-stack IPv4 & IPv6 batch update)",
+        website: "https://dash.cloudflare.com",
+        requires_domain: true,
+        required_args: &["token", "zone_id", "record_id_v4", "record_id_v6"],
+        optional_args: &[],
+        default_method: "POST",
+        default_url: "https://api.cloudflare.com/client/v4/zones/{{zone_id}}/dns_records/batch",
+        default_headers: &[
+            ("Authorization", "Bearer {{token}}"),
+            ("Content-Type", "application/json"),
+        ],
+        default_body: Some(r#"{"patches":[{"id":"{{record_id_v4}}","content":"{{ipv4}}"},{"id":"{{record_id_v6}}","content":"{{ipv6}}"}]}"#),
+        default_success_regex: Some(r#""success"\s*:\s*true"#),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "cloudflare-dualstack"
+    provider: "cloudflare"
+    domain: "sub.example.com"
+    args:
+      token: "${CF_API_TOKEN}"
+      zone_id: "${CF_ZONE_ID}"
+      record_id_v4: "${CF_RECORD_ID_V4}"
+      record_id_v6: "${CF_RECORD_ID_V6}""#,
+    },
+    Provider {
+        name: "cloudflare-v4",
+        aliases: &["cf-v4", "cloudflare-ipv4"],
+        description: "Cloudflare DNS API v4 (IPv4 A record)",
+        website: "https://dash.cloudflare.com",
+        requires_domain: true,
+        required_args: &["token", "zone_id", "record_id"],
+        optional_args: &[],
+        default_method: "PATCH",
+        default_url: "https://api.cloudflare.com/client/v4/zones/{{zone_id}}/dns_records/{{record_id}}",
+        default_headers: &[
+            ("Authorization", "Bearer {{token}}"),
+            ("Content-Type", "application/json"),
+        ],
+        default_body: Some(r#"{"content":"{{ipv4}}"}"#),
+        default_success_regex: Some(r#""success"\s*:\s*true"#),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "cloudflare-v4"
+    provider: "cloudflare-v4"
+    domain: "sub.example.com"
+    args:
+      token: "${CF_API_TOKEN}"
+      zone_id: "${CF_ZONE_ID}"
+      record_id: "${CF_RECORD_ID}""#,
+    },
+    Provider {
+        name: "cloudflare-v6",
+        aliases: &["cf-v6", "cloudflare-ipv6"],
+        description: "Cloudflare DNS API v4 (IPv6 AAAA record)",
+        website: "https://dash.cloudflare.com",
+        requires_domain: true,
+        required_args: &["token", "zone_id", "record_id"],
+        optional_args: &[],
+        default_method: "PATCH",
+        default_url: "https://api.cloudflare.com/client/v4/zones/{{zone_id}}/dns_records/{{record_id}}",
+        default_headers: &[
+            ("Authorization", "Bearer {{token}}"),
+            ("Content-Type", "application/json"),
+        ],
+        default_body: Some(r#"{"content":"{{ipv6}}"}"#),
+        default_success_regex: Some(r#""success"\s*:\s*true"#),
+        default_success_contains: &[],
+        example_yaml: r#"  - name: "cloudflare-v6"
+    provider: "cloudflare-v6"
+    domain: "sub.example.com"
+    args:
+      token: "${CF_API_TOKEN}"
+      zone_id: "${CF_ZONE_ID}"
+      record_id: "${CF_RECORD_ID}""#,
     },
 ];
 
@@ -288,6 +392,18 @@ pub fn format_providers_list() -> String {
                 p.required_args.join(", ")
             }
         ));
+        if !p.default_headers.is_empty() {
+            let hdr_keys = p
+                .default_headers
+                .iter()
+                .map(|(k, _)| *k)
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("   Headers:     {}\n", hdr_keys));
+        }
+        if let Some(body) = p.default_body {
+            out.push_str(&format!("   Body:        {}\n", body));
+        }
         if let Some(reg) = p.default_success_regex {
             out.push_str(&format!("   Success Reg: {}\n", reg));
         }
@@ -338,6 +454,15 @@ pub fn format_provider_detail(name: &str) -> Result<String, String> {
     out.push_str("\nDefault Request Template:\n");
     out.push_str(&format!("  Method: {}\n", p.default_method));
     out.push_str(&format!("  URL:    {}\n", p.default_url));
+    if !p.default_headers.is_empty() {
+        out.push_str("  Headers:\n");
+        for (k, v) in p.default_headers {
+            out.push_str(&format!("    {}: {}\n", k, v));
+        }
+    }
+    if let Some(body) = p.default_body {
+        out.push_str(&format!("  Body:   {}\n", body));
+    }
     if let Some(reg) = p.default_success_regex {
         out.push_str(&format!("  Success Regex:    {}\n", reg));
     }
@@ -388,15 +513,82 @@ mod tests {
     }
 
     #[test]
+    fn test_cloudflare_dualstack_provider() {
+        let cf = get_provider("cloudflare").expect("cloudflare dual-stack must exist");
+        assert_eq!(cf.name, "cloudflare");
+        assert!(cf.aliases.contains(&"cf"));
+        assert!(cf.aliases.contains(&"cloudflare-dualstack"));
+        assert!(cf.requires_domain);
+        assert_eq!(
+            cf.required_args,
+            &["token", "zone_id", "record_id_v4", "record_id_v6"]
+        );
+        assert_eq!(cf.default_method, "POST");
+
+        let req = cf.default_request();
+        assert_eq!(req.method(), "POST");
+        assert!(req.url().contains("api.cloudflare.com"));
+        assert!(req.url().contains("/zones/{{zone_id}}/dns_records/batch"));
+        assert_eq!(
+            req.headers.get("Content-Type").map(|s| s.as_str()),
+            Some("application/json")
+        );
+        assert_eq!(
+            req.headers.get("Authorization").map(|s| s.as_str()),
+            Some("Bearer {{token}}")
+        );
+        assert!(req.body.as_deref().unwrap().contains("record_id_v4"));
+        assert!(req.body.as_deref().unwrap().contains("record_id_v6"));
+        assert!(req.body.as_deref().unwrap().contains("{{ipv4}}"));
+        assert!(req.body.as_deref().unwrap().contains("{{ipv6}}"));
+
+        // Alias lookup
+        assert!(get_provider("CF").is_some());
+        assert!(get_provider("cloudflare-dualstack").is_some());
+    }
+
+    #[test]
+    fn test_cloudflare_v4_and_v6_providers() {
+        let cf_v4 = get_provider("cloudflare-v4").expect("cloudflare-v4 must exist");
+        assert_eq!(cf_v4.name, "cloudflare-v4");
+        assert!(cf_v4.aliases.contains(&"cf-v4"));
+        assert_eq!(cf_v4.required_args, &["token", "zone_id", "record_id"]);
+        assert_eq!(cf_v4.default_method, "PATCH");
+
+        let req4 = cf_v4.default_request();
+        assert_eq!(req4.method(), "PATCH");
+        assert_eq!(req4.body.as_deref(), Some(r#"{"content":"{{ipv4}}"}"#));
+
+        let cf_v6 = get_provider("cloudflare-v6").expect("cloudflare-v6 must exist");
+        assert_eq!(cf_v6.name, "cloudflare-v6");
+        assert!(cf_v6.aliases.contains(&"cf-v6"));
+        assert_eq!(cf_v6.required_args, &["token", "zone_id", "record_id"]);
+        assert_eq!(cf_v6.default_method, "PATCH");
+
+        let req6 = cf_v6.default_request();
+        assert_eq!(req6.method(), "PATCH");
+        assert_eq!(req6.body.as_deref(), Some(r#"{"content":"{{ipv6}}"}"#));
+    }
+
+    #[test]
     fn test_formatting() {
         let list_str = format_providers_list();
         assert!(list_str.contains("dynu"));
         assert!(list_str.contains("dynv6"));
         assert!(list_str.contains("duckdns"));
+        assert!(list_str.contains("cloudflare"));
+        assert!(list_str.contains("cloudflare-v4"));
+        assert!(list_str.contains("cloudflare-v6"));
 
         let detail = format_provider_detail("dynu").expect("detail formatting succeeds");
         assert!(detail.contains("Provider:     dynu"));
         assert!(detail.contains("Example Task Configuration:"));
+
+        let cf_detail =
+            format_provider_detail("cloudflare").expect("cf detail formatting succeeds");
+        assert!(cf_detail.contains("Provider:     cloudflare"));
+        assert!(cf_detail.contains("Authorization: Bearer {{token}}"));
+        assert!(cf_detail.contains("record_id_v4"));
 
         let err = format_provider_detail("invalid_xyz").unwrap_err();
         assert!(err.contains("Unknown provider"));
