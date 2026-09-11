@@ -55,10 +55,7 @@ impl RemoteIpFetcher {
             {
                 return Ok(ip);
             }
-            tracing::debug!(
-                url = %url,
-                "Failed to query IPv4 from remote source, trying next fallback"
-            );
+            tracing::debug!("Failed to query IPv4 from '{}', trying next fallback", url);
         }
         Err(IpFetchError::AllSourcesExhausted)
     }
@@ -78,10 +75,7 @@ impl RemoteIpFetcher {
             {
                 return Ok(ip);
             }
-            tracing::debug!(
-                url = %url,
-                "Failed to query IPv6 from remote source, trying next fallback"
-            );
+            tracing::debug!("Failed to query IPv6 from '{}', trying next fallback", url);
         }
         Err(IpFetchError::AllSourcesExhausted)
     }

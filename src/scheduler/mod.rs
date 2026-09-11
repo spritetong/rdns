@@ -95,7 +95,7 @@ impl SchedulerService {
         let mut has_error = false;
         for s in &self.interfaces {
             if let Err(e) = s.run_once().await {
-                tracing::error!(interface = %s.name(), error = %e, "Interface failed in run_once");
+                tracing::error!("[{}] Interface failed in run_once: {}", s.name(), e);
                 has_error = true;
             }
         }
@@ -121,7 +121,7 @@ impl SchedulerService {
             });
         }
 
-        tracing::info!("All interface tasks spawned, daemon running. Awaiting OS signal...");
+        tracing::info!("Starting main loop");
         let action = self.lifecycle.wait_and_drain().await;
         match action {
             LifecycleAction::Shutdown => tracing::info!("RDNS daemon stopped cleanly"),

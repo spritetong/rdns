@@ -43,15 +43,15 @@ impl TaskManager {
         }
 
         tracing::info!(
-            task_count = handles.len(),
-            timeout_secs = timeout_duration.as_secs(),
-            "Draining active tasks for graceful shutdown"
+            "Waiting up to {}s for {} active tasks to drain",
+            timeout_duration.as_secs(),
+            handles.len()
         );
 
         let drain_future = async {
             for (name, handle) in handles.iter_mut() {
                 if let Err(e) = handle.await {
-                    tracing::warn!(task = %name, error = %e, "Task terminated with error during join");
+                    tracing::warn!("[{}] Task terminated with error during join: {}", name, e);
                 }
             }
         };
@@ -60,13 +60,13 @@ impl TaskManager {
             .await
             .is_err()
         {
-            tracing::error!(
-                timeout_secs = timeout_duration.as_secs(),
-                "Graceful drain timed out, aborting remaining hung tasks"
+            tracing::warn!(
+                "Shutdown timed out after {}s, aborting remaining tasks",
+                timeout_duration.as_secs()
             );
             for (name, handle) in &handles {
                 if !handle.is_finished() {
-                    tracing::warn!(task = %name, "Forcibly aborting task");
+                    tracing::warn!("[{}] Forcibly aborting task", name);
                     handle.abort();
                 }
             }

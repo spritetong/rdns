@@ -87,18 +87,29 @@ impl TaskExecutor {
             .unwrap_or_default()
             .as_secs();
 
+        let new_ip_desc = match (&v4_str, &v6_str) {
+            (Some(v4), Some(v6)) => format!("{}, {}", v4, v6),
+            (Some(v4), None) => v4.clone(),
+            (None, Some(v6)) => v6.clone(),
+            (None, None) => "none".to_string(),
+        };
+        let old_ip_desc = match (&cached.ipv4, &cached.ipv6) {
+            (Some(v4), Some(v6)) => format!("{}, {}", v4, v6),
+            (Some(v4), None) => v4.clone(),
+            (None, Some(v6)) => v6.clone(),
+            (None, None) => "".to_string(),
+        };
+
         let mut need_update = false;
         let mut known_dns_mismatch = false;
 
         if v4_str != cached.ipv4 || v6_str != cached.ipv6 {
             need_update = true;
             tracing::info!(
-                task = %task_name,
-                old_v4 = ?cached.ipv4,
-                new_v4 = ?v4_str,
-                old_v6 = ?cached.ipv6,
-                new_v6 = ?v6_str,
-                "IP change detected"
+                "[{}] Update needed - L: '{}' <> R: '{}'",
+                task_name,
+                new_ip_desc,
+                old_ip_desc
             );
         } else if let Some(ref domain) = self.config.domain {
             // Local IP hasn't changed. Check cloud DNS record if domain is configured.
@@ -108,10 +119,8 @@ impl TaskExecutor {
                 .map(|t| {
                     if now < t {
                         tracing::warn!(
-                            task = %task_name,
-                            now,
-                            last_success = t,
-                            "System clock jumped backwards; bypassing cooldown"
+                            "[{}] System clock jumped backwards, bypassing cooldown",
+                            task_name
                         );
                         false
                     } else {
@@ -133,23 +142,33 @@ impl TaskExecutor {
                         if v4_mismatch || v6_mismatch {
                             need_update = true;
                             known_dns_mismatch = true;
+                            let dns_ip_desc = match (dns_v4, dns_v6) {
+                                (Some(v4), Some(v6)) => format!("{}, {}", v4, v6),
+                                (Some(v4), None) => v4.to_string(),
+                                (None, Some(v6)) => v6.to_string(),
+                                (None, None) => "".to_string(),
+                            };
                             tracing::info!(
-                                task = %task_name,
-                                domain = %domain,
-                                dns_v4 = ?dns_v4,
-                                actual_v4 = ?v4_opt,
-                                dns_v6 = ?dns_v6,
-                                actual_v6 = ?v6_opt,
-                                "DNS record discrepancy detected against cloud server, triggering reconciliation update"
+                                "[{}] Update needed - L: '{}' <> R: '{}' (domain: '{}')",
+                                task_name,
+                                new_ip_desc,
+                                dns_ip_desc,
+                                domain
+                            );
+                        } else {
+                            tracing::debug!(
+                                "[{}] Registered IP matches local IP for domain '{}'",
+                                task_name,
+                                domain
                             );
                         }
                     }
                     Err(e) => {
                         tracing::warn!(
-                            task = %task_name,
-                            domain = %domain,
-                            error = %e,
-                            "Failed to query DNS record for discrepancy check"
+                            "[{}] DNS lookup failed for domain '{}': {}",
+                            task_name,
+                            domain,
+                            e
                         );
                     }
                 }
@@ -177,26 +196,26 @@ impl TaskExecutor {
                 need_update = true;
                 is_heartbeat_attempt = true;
                 tracing::info!(
-                    task = %task_name,
-                    force_interval,
-                    failure_count = hb.failure_count,
-                    "Force update interval reached, executing update"
+                    "[{}] Forced update - interval {}s reached",
+                    task_name,
+                    force_interval
                 );
             } else {
                 tracing::info!(
-                    task = %task_name,
-                    failure_count = hb.failure_count,
+                    "[{}] Forced update delayed due to backoff (retry in {}s, failures: {})",
+                    task_name,
                     backoff_secs,
-                    "Heartbeat force update delayed due to exponential backoff"
+                    hb.failure_count
                 );
             }
         }
 
         // If dry_run is true, always execute to show the preview
         if !need_update && !self.ctx.dry_run {
-            tracing::info!(
-                task = %task_name,
-                "IP unchanged, DNS records match, and heartbeat interval not reached, skipping request"
+            tracing::debug!(
+                "[{}] Update not needed - IP '{}' unchanged",
+                task_name,
+                new_ip_desc
             );
             return TaskRunOutcome::default();
         }
@@ -217,7 +236,7 @@ impl TaskExecutor {
                     "Task '{}' has no request configuration",
                     task_name
                 ));
-                tracing::error!(task = %task_name, "Task has no request configuration");
+                tracing::error!("[{}] Task has no request configuration", task_name);
                 return TaskRunOutcome {
                     should_shorten_interval: false,
                     error: Some(err),
@@ -238,6 +257,24 @@ impl TaskExecutor {
                     let mut hb = self.heartbeat_state.lock();
                     hb.failure_count = 0;
                     hb.last_attempt_time = None;
+                }
+                if self.ctx.dry_run {
+                    tracing::info!(
+                        "[{}] Dry Run: NO update sent (preview verified)",
+                        task_name
+                    );
+                } else if is_heartbeat_attempt {
+                    tracing::info!(
+                        "[{}] Forced update successful - IP '{}' sent",
+                        task_name,
+                        new_ip_desc
+                    );
+                } else {
+                    tracing::info!(
+                        "[{}] Update successful - IP '{}' sent",
+                        task_name,
+                        new_ip_desc
+                    );
                 }
                 if !self.ctx.dry_run {
                     let old_ip = format!("v4: {:?}, v6: {:?}", cached.ipv4, cached.ipv6);
@@ -279,18 +316,18 @@ impl TaskExecutor {
             Err(e) => {
                 let err_msg = e.to_string();
                 tracing::error!(
-                    task = %task_name,
-                    error = %err_msg,
-                    "Failed to execute DDNS update request"
+                    "[{}] Updating IP at DDNS provider failed: {}",
+                    task_name,
+                    err_msg
                 );
                 if is_heartbeat_attempt {
                     let mut hb = self.heartbeat_state.lock();
                     hb.failure_count = hb.failure_count.saturating_add(1);
                     hb.last_attempt_time = Some(now);
                     tracing::warn!(
-                        task = %task_name,
-                        failure_count = hb.failure_count,
-                        "Recorded heartbeat failure for exponential backoff"
+                        "[{}] Heartbeat failure recorded for backoff (count: {})",
+                        task_name,
+                        hb.failure_count
                     );
                 }
                 if !self.ctx.dry_run {
@@ -321,10 +358,10 @@ impl TaskExecutor {
                             }
                             Err(dns_err) => {
                                 tracing::warn!(
-                                    task = %task_name,
-                                    domain = %domain,
-                                    error = %dns_err,
-                                    "Failed to query DNS record after update failure; treating as inconsistent"
+                                    "[{}] Failed to query DNS record for domain '{}' after update failure: {}",
+                                    task_name,
+                                    domain,
+                                    dns_err
                                 );
                                 true
                             }
@@ -333,22 +370,20 @@ impl TaskExecutor {
 
                     if dns_mismatch {
                         tracing::warn!(
-                            task = %task_name,
-                            domain = %domain,
-                            "Update failed and DNS record is inconsistent: requesting shortened retry interval"
+                            "[{}] DNS record inconsistent after failure, requesting shortened retry interval",
+                            task_name
                         );
                         should_shorten = true;
                     } else {
                         tracing::info!(
-                            task = %task_name,
-                            domain = %domain,
-                            "Update failed but DNS record already matches actual IP: maintaining normal interval"
+                            "[{}] DNS record matches actual IP after failure, maintaining normal interval",
+                            task_name
                         );
                     }
                 } else {
                     tracing::warn!(
-                        task = %task_name,
-                        "Update failed for task without domain: requesting shortened retry interval"
+                        "[{}] Update failed for domainless task, requesting shortened retry interval",
+                        task_name
                     );
                     should_shorten = true;
                 }
@@ -399,7 +434,7 @@ impl InterfaceScheduler {
     /// Execute a single round of interface IP detection, driving all bound tasks concurrently.
     pub async fn run_round(&self) -> InterfaceRunOutcome {
         let iface_name = &self.config.name;
-        tracing::info!(interface = %iface_name, "Starting IP resolution for interface");
+        tracing::debug!("[{}] Detecting current IP", iface_name);
 
         let (v4_opt, v6_opt) = match self.resolver.resolve().await {
             Ok(ips) => ips,
@@ -409,9 +444,9 @@ impl InterfaceScheduler {
                     source: e,
                 };
                 tracing::error!(
-                    interface = %iface_name,
-                    error = %err,
-                    "Failed to resolve IP for interface"
+                    "[{}] Failed to detect current IP: {}",
+                    iface_name,
+                    err
                 );
                 return InterfaceRunOutcome {
                     should_shorten_interval: true,
@@ -420,11 +455,17 @@ impl InterfaceScheduler {
             }
         };
 
+        let ip_desc = match (v4_opt, v6_opt) {
+            (Some(v4), Some(v6)) => format!("'{}', IPv6 '{}'", v4, v6),
+            (Some(v4), None) => format!("'{}'", v4),
+            (None, Some(v6)) => format!("IPv6 '{}'", v6),
+            (None, None) => "none".to_string(),
+        };
+
         tracing::info!(
-            interface = %iface_name,
-            ipv4 = ?v4_opt.map(|ip| ip.to_string()),
-            ipv6 = ?v6_opt.map(|ip| ip.to_string()),
-            "IP addresses resolved successfully for interface"
+            "[{}] Current IP {} detected",
+            iface_name,
+            ip_desc
         );
 
         let mut join_set = tokio::task::JoinSet::new();
@@ -448,19 +489,19 @@ impl InterfaceScheduler {
                     }
                     if let Some(e) = outcome.error {
                         tracing::error!(
-                            interface = %iface_name,
-                            task = %task_name,
-                            error = %e,
-                            "Task execution failed"
+                            "[{}] Task '{}' failed: {}",
+                            iface_name,
+                            task_name,
+                            e
                         );
                         has_error = true;
                     }
                 }
                 Err(join_err) => {
                     tracing::error!(
-                        interface = %iface_name,
-                        error = %join_err,
-                        "Task panicked or was aborted"
+                        "[{}] Task panicked or was aborted: {}",
+                        iface_name,
+                        join_err
                     );
                     has_error = true;
                 }
@@ -490,18 +531,17 @@ impl InterfaceScheduler {
     pub async fn run_loop(&self, token: CancellationToken) {
         let iface_name = self.config.name.clone();
         tracing::info!(
-            interface = %iface_name,
-            interval_secs = self.normal_interval.as_secs(),
-            retry_interval_secs = self.retry_interval.as_secs(),
-            bound_tasks_count = self.tasks.len(),
-            "Starting periodic interface IP resolution loop"
+            "[{}] Starting periodic loop (check interval: {}s, retry interval: {}s)",
+            iface_name,
+            self.normal_interval.as_secs(),
+            self.retry_interval.as_secs()
         );
 
         loop {
             if token.is_cancelled() {
                 tracing::info!(
-                    interface = %iface_name,
-                    "Interface cancellation token set, terminating loop"
+                    "[{}] Received cancellation, terminating loop",
+                    iface_name
                 );
                 break;
             }
@@ -509,27 +549,32 @@ impl InterfaceScheduler {
             let outcome = self.run_round().await;
             if outcome.has_error {
                 tracing::warn!(
-                    interface = %iface_name,
-                    "Interface execution encountered an error in loop"
+                    "[{}] Encountered error during check round",
+                    iface_name
                 );
             }
 
             let next_interval = if outcome.should_shorten_interval {
-                tracing::info!(
-                    interface = %iface_name,
-                    retry_interval_secs = self.retry_interval.as_secs(),
-                    "Update failed and DNS record is inconsistent: entering shortened retry interval"
+                tracing::warn!(
+                    "[{}] Update failed - entering shortened retry interval ({}s)",
+                    iface_name,
+                    self.retry_interval.as_secs()
                 );
                 self.retry_interval
             } else {
+                tracing::debug!(
+                    "[{}] Waiting {} seconds (Check Interval)",
+                    iface_name,
+                    self.normal_interval.as_secs()
+                );
                 self.normal_interval
             };
 
             tokio::select! {
                 _ = token.cancelled() => {
                     tracing::info!(
-                        interface = %iface_name,
-                        "Interface received cancellation during sleep, shutting down immediately"
+                        "[{}] Received cancellation during sleep, shutting down immediately",
+                        iface_name
                     );
                     break;
                 }
@@ -537,7 +582,7 @@ impl InterfaceScheduler {
             }
         }
 
-        tracing::info!(interface = %iface_name, "Interface loop exited cleanly");
+        tracing::info!("[{}] Interface loop terminated cleanly", iface_name);
     }
 }
 

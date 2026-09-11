@@ -143,16 +143,14 @@ impl NotificationDispatcher {
         match req.send().await {
             Ok(resp) => {
                 tracing::info!(
-                    status = %resp.status(),
-                    url = %rendered_url,
-                    "Webhook notification sent successfully"
+                    "Webhook notification sent successfully (HTTP {})",
+                    resp.status()
                 );
             }
             Err(e) => {
                 tracing::warn!(
-                    error = %e,
-                    url = %rendered_url,
-                    "Failed to send webhook notification"
+                    "Failed to send webhook notification: {}",
+                    e
                 );
             }
         }

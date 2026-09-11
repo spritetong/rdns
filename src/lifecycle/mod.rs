@@ -49,23 +49,15 @@ impl LifecycleManager {
     pub async fn wait_and_drain(&self) -> LifecycleAction {
         let action = match SignalListener::wait_signal().await {
             Ok(ProcessSignal::Shutdown(sig)) => {
-                tracing::info!(
-                    signal = %sig,
-                    "Received OS termination signal, initiating shutdown sequence"
-                );
+                tracing::info!("Received {}, terminating cleanly", sig);
                 LifecycleAction::Shutdown
             }
             Ok(ProcessSignal::Reload) => {
-                tracing::info!(
-                    "Received SIGHUP reload signal, draining tasks for configuration reload"
-                );
+                tracing::info!("Received SIGHUP, reloading configuration");
                 LifecycleAction::Reload
             }
             Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    "Failed to listen for OS signals, initiating shutdown"
-                );
+                tracing::error!("Failed to listen for OS signals: {}", e);
                 LifecycleAction::Shutdown
             }
         };

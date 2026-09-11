@@ -78,10 +78,7 @@ impl InterfaceIpFetcher {
             allow_private_v6,
         )
         .unwrap_or_else(|e| {
-            tracing::error!(
-                error = %e,
-                "Invalid pattern in InterfaceIpFetcher::new, defaulting to fallback"
-            );
+            tracing::error!("Invalid interface regex pattern: {}", e);
             Self {
                 v4_interface_pattern: ".*".to_string(),
                 v4_interface_regex: Regex::new(".*").expect("valid regex"),
@@ -197,8 +194,8 @@ impl InterfaceIpFetcher {
 
         // 3. Fallback to temporary address if no stable address is available
         tracing::warn!(
-            interface = %self.v6_interface_pattern,
-            "Only RFC 4941 temporary IPv6 address found; using as fallback"
+            "[{}] Only RFC 4941 temporary IPv6 address found, using as fallback",
+            self.v6_interface_pattern
         );
         Ok(candidates[0])
     }

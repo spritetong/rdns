@@ -54,8 +54,8 @@ impl RequestExecutor {
 
         if tls_insecure {
             tracing::warn!(
-                task = %task_name,
-                "Task configured with tls_insecure: true. TLS certificate verification is DISABLED."
+                "[{}] TLS certificate verification is disabled (tls_insecure: true)",
+                task_name
             );
         }
 
@@ -165,10 +165,10 @@ impl RequestExecutor {
             ResponseVerifier::new(req_cfg.success_regex.as_deref(), req_cfg.success_contains())?;
         verifier.verify(status, &resp_body)?;
 
-        tracing::info!(
-            task = %task_name,
-            status = %status,
-            "HTTP Webhook request executed and verified successfully"
+        tracing::debug!(
+            "[{}] DDNS provider response verified successfully (HTTP {})",
+            task_name,
+            status
         );
 
         Ok(())

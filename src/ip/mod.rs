@@ -107,8 +107,8 @@ impl InterfaceIpResolver {
             (Ok(v4), Err(e)) => {
                 if v4_enabled && v4.is_some() {
                     tracing::warn!(
-                        error = %e,
-                        "IPv6 resolution failed, but IPv4 succeeded; continuing with single-stack degradation"
+                        "IPv6 resolution failed ({}), continuing with IPv4 single-stack",
+                        e
                     );
                     Ok((v4, None))
                 } else {
@@ -118,8 +118,8 @@ impl InterfaceIpResolver {
             (Err(e), Ok(v6)) => {
                 if v6_enabled && v6.is_some() {
                     tracing::warn!(
-                        error = %e,
-                        "IPv4 resolution failed, but IPv6 succeeded; continuing with single-stack degradation"
+                        "IPv4 resolution failed ({}), continuing with IPv6 single-stack",
+                        e
                     );
                     Ok((None, v6))
                 } else {
@@ -128,9 +128,9 @@ impl InterfaceIpResolver {
             }
             (Err(e4), Err(e6)) => {
                 tracing::error!(
-                    ipv4_error = %e4,
-                    ipv6_error = %e6,
-                    "Both IPv4 and IPv6 resolution failed"
+                    "Both IPv4 and IPv6 resolution failed (IPv4: {}, IPv6: {})",
+                    e4,
+                    e6
                 );
                 Err(e4)
             }

@@ -153,9 +153,12 @@ fn main() -> ExitCode {
         EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new(&config.global.log_level))
     };
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
 
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "Starting RDNS client");
+    tracing::info!("Starting RDNS client v{}", env!("CARGO_PKG_VERSION"));
 
     // 4. Determine Tokio worker threads
     let worker_threads = cli
@@ -180,8 +183,8 @@ fn main() -> ExitCode {
         let write_state = cli.should_write_state();
         if !write_state {
             tracing::info!(
-                path = %state_path.display(),
-                "State persistence disk writing is disabled"
+                "State persistence disk writing is disabled ('{}')",
+                state_path.display()
             );
         }
         let state_store = StateStore::new_with_write_flag(&state_path, write_state);
@@ -196,12 +199,12 @@ fn main() -> ExitCode {
             ) {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::error!(error = %e, "Failed to initialize scheduler service");
+                    tracing::error!("Failed to initialize scheduler service: {}", e);
                     return ExitCode::FAILURE;
                 }
             };
 
-            tracing::info!(dry_run = cli.dry_run, "Executing single run cycle");
+            tracing::info!("Executing single run cycle");
             let result = scheduler.run_once().await;
             // Flush state persistence before process exit; the background writer is
             // dropped when the runtime shuts down and would lose pending updates.
@@ -209,7 +212,7 @@ fn main() -> ExitCode {
             match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
-                    tracing::error!(error = %e, "Single run completed with errors");
+                    tracing::error!("Single run completed with errors: {}", e);
                     ExitCode::FAILURE
                 }
             }
@@ -226,7 +229,7 @@ fn main() -> ExitCode {
                 ) {
                     Ok(s) => s,
                     Err(e) => {
-                        tracing::error!(error = %e, "Failed to initialize scheduler service");
+                        tracing::error!("Failed to initialize scheduler service: {}", e);
                         return ExitCode::FAILURE;
                     }
                 };
@@ -240,8 +243,8 @@ fn main() -> ExitCode {
                     }
                     lifecycle::LifecycleAction::Reload => {
                         tracing::info!(
-                            path = %cli.config.display(),
-                            "Received SIGHUP signal; reloading configuration"
+                            "Received SIGHUP signal, reloading configuration from '{}'",
+                            cli.config.display()
                         );
                         match load_config(&cli.config) {
                             Ok(mut new_cfg) => match validate_config(&mut new_cfg) {
@@ -251,15 +254,15 @@ fn main() -> ExitCode {
                                 }
                                 Err(e) => {
                                     tracing::error!(
-                                        error = %e,
-                                        "Reloaded configuration failed validation; keeping current configuration"
+                                        "Reloaded configuration failed validation: {}",
+                                        e
                                     );
                                 }
                             },
                             Err(e) => {
                                 tracing::error!(
-                                    error = %e,
-                                    "Failed to read reloaded configuration; keeping current configuration"
+                                    "Failed to read reloaded configuration: {}",
+                                    e
                                 );
                             }
                         }
@@ -286,8 +289,8 @@ pub(crate) fn build_tokio_runtime(
         }
         Some(n) => {
             tracing::info!(
-                worker_threads = n,
-                "Initialized multi-threaded Tokio runtime with custom worker threads"
+                "Initialized multi-threaded Tokio runtime with {} worker threads",
+                n
             );
             let mut b = tokio::runtime::Builder::new_multi_thread();
             b.worker_threads(n as usize);

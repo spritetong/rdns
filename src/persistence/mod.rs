@@ -114,10 +114,7 @@ impl StateStore {
             && let Ok(map) = serde_json::from_str::<HashMap<String, TaskState>>(&content)
         {
             *self.states.write() = map;
-            tracing::info!(
-                path = %self.path.display(),
-                "Loaded previous IP state records"
-            );
+            tracing::info!("State loaded from '{}'", self.path.display());
         }
     }
 
@@ -196,16 +193,16 @@ impl StateStore {
             match serde_json::to_vec_pretty(&*map) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    tracing::error!(error = %e, "Failed to serialize state to JSON");
+                    tracing::error!("Failed to serialize state to JSON: {}", e);
                     return;
                 }
             }
         };
 
         if let Err(e) = write_atomic(path, &json_bytes) {
-            tracing::error!(path = %path.display(), error = %e, "Failed to atomically save state file");
+            tracing::error!("Failed to save state to '{}': {}", path.display(), e);
         } else {
-            tracing::debug!(path = %path.display(), "State file atomically updated");
+            tracing::debug!("State file atomically updated at '{}'", path.display());
         }
     }
 }
