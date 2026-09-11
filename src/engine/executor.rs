@@ -14,14 +14,16 @@ pub const MAX_RESP_BODY_SIZE: usize = 1024 * 1024; // 1 MiB
 
 pub struct RequestExecutor {
     default_client: reqwest::Client,
+    default_proxy: Option<String>,
     timeout: Duration,
     custom_clients: parking_lot::RwLock<HashMap<(Option<String>, bool), reqwest::Client>>,
 }
 
 impl RequestExecutor {
-    pub fn new(client: reqwest::Client, timeout: Duration) -> Self {
+    pub fn new(client: reqwest::Client, default_proxy: Option<String>, timeout: Duration) -> Self {
         Self {
             default_client: client,
+            default_proxy,
             timeout,
             custom_clients: parking_lot::RwLock::new(HashMap::new()),
         }
@@ -34,9 +36,10 @@ impl RequestExecutor {
     fn get_or_create_custom_client(
         &self,
         task_name: &str,
-        req_cfg: &RequestConfig,
+        proxy: Option<&str>,
+        tls_insecure: bool,
     ) -> Result<reqwest::Client, RdnsError> {
-        let key = (req_cfg.proxy.clone(), req_cfg.tls_insecure);
+        let key = (proxy.map(str::to_string), tls_insecure);
         {
             let read_guard = self.custom_clients.read();
             if let Some(client) = read_guard.get(&key) {
@@ -49,7 +52,7 @@ impl RequestExecutor {
             return Ok(client.clone());
         }
 
-        if req_cfg.tls_insecure {
+        if tls_insecure {
             tracing::warn!(
                 task = %task_name,
                 "Task configured with tls_insecure: true. TLS certificate verification is DISABLED."
@@ -58,8 +61,8 @@ impl RequestExecutor {
 
         let client = crate::engine::build_http_client(
             self.timeout,
-            req_cfg.proxy.as_deref(),
-            req_cfg.tls_insecure,
+            proxy,
+            tls_insecure,
         )?;
 
         write_guard.insert(key, client.clone());
@@ -74,7 +77,7 @@ impl RequestExecutor {
         dry_run: bool,
     ) -> Result<(), RdnsError> {
         // 1. Render URL
-        let rendered_url = render_template(&req_cfg.url, ctx)?;
+        let rendered_url = render_template(req_cfg.url(), ctx)?;
 
         // 2. Render Headers
         let mut headers = HeaderMap::new();
@@ -95,11 +98,13 @@ impl RequestExecutor {
             None
         };
 
+        let effective_proxy = req_cfg.proxy.as_deref().or(self.default_proxy.as_deref());
+
         // 4. Handle Dry-Run Mode
         if dry_run {
             let masked_url = mask_sensitive_params(&rendered_url);
             println!("\n========== [DRY-RUN PREVIEW: {}] ==========", task_name);
-            println!("Method: {}", req_cfg.method.to_uppercase());
+            println!("Method: {}", req_cfg.method().to_uppercase());
             println!("URL:    {}", masked_url);
             println!("Headers:");
             for (k, v) in &headers {
@@ -117,13 +122,15 @@ impl RequestExecutor {
             if let Some(ref reg) = req_cfg.success_regex {
                 println!("Assertion Regex:    {}", reg);
             }
-            if !req_cfg.success_contains.is_empty() {
-                println!("Assertion Contains: {:?}", req_cfg.success_contains);
+            if !req_cfg.success_contains().is_empty() {
+                println!("Assertion Contains: {:?}", req_cfg.success_contains());
             }
-            if req_cfg.tls_insecure {
+            if req_cfg.tls_insecure() {
                 println!("TLS Insecure:       true (CERTIFICATE VALIDATION DISABLED)");
             }
-            if let Some(ref p) = req_cfg.proxy {
+            if let Some(p) = effective_proxy
+                && !p.trim().is_empty()
+            {
                 println!("Proxy:              {}", p);
             }
             println!("================================================\n");
@@ -131,15 +138,16 @@ impl RequestExecutor {
         }
 
         // 5. Select appropriate HTTP client (cached by proxy/tls_insecure config)
-        let client = if !req_cfg.tls_insecure && req_cfg.proxy.is_none() {
+        let is_default_proxy = effective_proxy == self.default_proxy.as_deref();
+        let client = if !req_cfg.tls_insecure() && is_default_proxy {
             self.default_client.clone()
         } else {
-            self.get_or_create_custom_client(task_name, req_cfg)?
+            self.get_or_create_custom_client(task_name, effective_proxy, req_cfg.tls_insecure())?
         };
 
         // 6. Execute Live Request
-        let method = Method::from_str(&req_cfg.method.to_uppercase()).map_err(|e| {
-            RdnsError::Assertion(format!("Invalid HTTP method '{}': {}", req_cfg.method, e))
+        let method = Method::from_str(&req_cfg.method().to_uppercase()).map_err(|e| {
+            RdnsError::Assertion(format!("Invalid HTTP method '{}': {}", req_cfg.method(), e))
         })?;
 
         let mut req = client.request(method, &rendered_url).headers(headers);
@@ -154,7 +162,7 @@ impl RequestExecutor {
 
         // 7. Verify Response
         let verifier =
-            ResponseVerifier::new(req_cfg.success_regex.as_deref(), &req_cfg.success_contains)?;
+            ResponseVerifier::new(req_cfg.success_regex.as_deref(), req_cfg.success_contains())?;
         verifier.verify(status, &resp_body)?;
 
         tracing::info!(
@@ -341,5 +349,52 @@ mod tests {
         let resp = client.get(format!("http://{}", addr)).send().await.unwrap();
         let res = read_bounded_text(resp, 100).await.unwrap();
         assert_eq!(res, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_request_executor_dry_run_with_global_proxy_fallback() {
+        let client = reqwest::Client::new();
+        let executor = RequestExecutor::new(
+            client,
+            Some("http://127.0.0.1:7890".to_string()),
+            Duration::from_secs(10),
+        );
+        let req_cfg = RequestConfig {
+            url: Some("https://example.com/update".to_string()),
+            tls_insecure: Some(true),
+            ..Default::default()
+        };
+        let ctx = TemplateContext {
+            ipv4: Some("1.2.3.4"),
+            ipv6: None,
+            domain: Some("test.domain"),
+            timestamp: Some(1234567890),
+            args: None,
+        };
+
+        // dry-run executes cleanly and displays the effective proxy
+        let res = executor.execute("test-task", &req_cfg, &ctx, true).await;
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_request_executor_custom_client_caches_effective_proxy() {
+        let client = reqwest::Client::new();
+        let executor = RequestExecutor::new(
+            client,
+            Some("http://127.0.0.1:7890".to_string()),
+            Duration::from_secs(10),
+        );
+
+        let _c1 = executor
+            .get_or_create_custom_client("t1", Some("http://127.0.0.1:7890"), true)
+            .expect("client creation succeeds");
+        let _c2 = executor
+            .get_or_create_custom_client("t2", Some("http://127.0.0.1:7890"), true)
+            .expect("client reuse succeeds");
+
+        assert_eq!(executor.custom_clients.read().len(), 1);
+        let key = (Some("http://127.0.0.1:7890".to_string()), true);
+        assert!(executor.custom_clients.read().contains_key(&key));
     }
 }

@@ -23,17 +23,18 @@ impl Provider {
     /// Instantiate default RequestConfig for this provider.
     pub fn default_request(&self) -> RequestConfig {
         RequestConfig {
-            method: self.default_method.to_string(),
-            url: self.default_url.to_string(),
+            method: Some(self.default_method.to_string()),
+            url: Some(self.default_url.to_string()),
             headers: Default::default(),
             body: None,
             success_regex: self.default_success_regex.map(|s| s.to_string()),
-            success_contains: self
-                .default_success_contains
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            tls_insecure: false,
+            success_contains: Some(
+                self.default_success_contains
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            tls_insecure: Some(false),
             proxy: None,
         }
     }
@@ -367,10 +368,10 @@ mod tests {
         assert_eq!(dynu.required_args, &["password"]);
 
         let req = dynu.default_request();
-        assert_eq!(req.method, "GET");
-        assert!(req.url.contains("api.dynu.com"));
-        assert!(req.url.contains("{{domain}}"));
-        assert!(req.url.contains("{{password}}"));
+        assert_eq!(req.method(), "GET");
+        assert!(req.url().contains("api.dynu.com"));
+        assert!(req.url().contains("{{domain}}"));
+        assert!(req.url().contains("{{password}}"));
         assert_eq!(req.success_regex.as_deref(), Some("^(good|nochg)"));
 
         // Case insensitivity

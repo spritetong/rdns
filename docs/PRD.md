@@ -71,7 +71,7 @@ Abstracts every update into a parameterized HTTP request, complemented by built-
   * Sensitive tokens/passwords in `args` (e.g., `password: "${DYNU_PASSWORD}"`) can reference environment variables directly, keeping credentials out of version-controlled files.
 * **Predefined Provider Templates (`provider`)**:
   * Tasks can specify `provider: "dynu"` (or `dynv6`, `duckdns`, `he`, `noip`, etc.).
-  * **Automatic Template Assembly**: When `request` is omitted, standard HTTP templates, methods, URLs, and assertions (e.g., Dynu's `^(good|nochg)`) are auto-populated.
+  * **Automatic Template Assembly & Merging**: Provider defaults populate the base `RequestConfig`. If a user also provides a task `request` block, it is merged into the provider template as overrides—allowing selective customization of `proxy`, `tls_insecure`, `headers` (merged key-by-key), `method`, `url`, `body`, or assertions without duplicating boilerplate.
   * **Parameter Validation**: Verifies mandatory parameters on startup (e.g., `password` for Dynu, `token` for dynv6), failing fast with clear instructions if any are missing.
   * **Built-in Providers**: `dynu` (dual-stack), `dynu-ipv4`, `dynu-ipv6`, `dynv6` (dual-stack), `dynv6-ipv4`, `dynv6-ipv6`, `duckdns` (dual-stack), `duckdns-ipv4`, `duckdns-ipv6`, `he` (Hurricane Electric), `noip`, etc.
 * **CLI Provider Introspection (`--list-providers` / `--provider`)**:
@@ -86,7 +86,8 @@ Abstracts every update into a parameterized HTTP request, complemented by built-
   * **Platform Native CA Stores**: Automatically loads OS root certificates (Windows Certificate Store, macOS Keychain, Linux `/etc/ssl/certs`).
   * **Insecure TLS Option**: Supports `tls_insecure: true` (default: `false`) for internal self-signed Webhooks, complete with security warnings.
 * **Proxy Support**:
-  * Configurable globally or per-task (`proxy: "http://127.0.0.1:7890"` or `socks5://127.0.0.1:1080`), automatically respecting environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`).
+  * Configurable globally (`global.proxy`) or per-task (`request.proxy`: `"http://127.0.0.1:7890"` or `"socks5://127.0.0.1:1080"`).
+  * **Automatic Global Fallback**: If a task does not configure `proxy`, it automatically defaults to `global.proxy` (including under `tls_insecure: true` and dry-run preview), while also automatically respecting environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`).
 * **Response Assertions**:
   * HTTP status code validation (default `200..=299`).
   * Response body validation: Supports `success_contains` (substring) or `success_regex` (regular expression), updating local state only upon successful verification.

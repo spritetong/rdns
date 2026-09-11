@@ -285,10 +285,14 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
                 }
             }
 
-            // Populate default request template if user didn't specify one
-            if task.request.is_none() {
-                task.request = Some(p.default_request());
+            // Populate default request template, merging user request overrides if present
+            let mut effective_req = p.default_request();
+            if let Some(user_req) = task.request.take() {
+                effective_req.merge(user_req);
             }
+            task.request = Some(effective_req);
+        } else if let Some(ref mut user_req) = task.request {
+            user_req.fill_defaults();
         }
 
         let req = match task.request.as_ref() {
@@ -302,7 +306,7 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
         };
 
         // Validate request URL
-        if req.url.trim().is_empty() {
+        if req.url().trim().is_empty() {
             return Err(ConfigError::Validation {
                 field: format!("tasks[{}].request.url", task.name),
                 message: "Request URL cannot be empty".to_string(),
@@ -336,6 +340,13 @@ mod tests {
     use super::*;
     use crate::config::model::*;
 
+    fn test_request(url: &str) -> RequestConfig {
+        RequestConfig {
+            url: Some(url.to_string()),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn test_retry_interval_zero_rejected() {
         let mut config = Config {
@@ -368,16 +379,7 @@ mod tests {
                 domain: None,
                 provider: None,
                 args: Default::default(),
-                request: Some(RequestConfig {
-                    method: "GET".to_string(),
-                    url: "http://127.0.0.1".to_string(),
-                    headers: Default::default(),
-                    body: None,
-                    tls_insecure: false,
-                    proxy: None,
-                    success_contains: vec![],
-                    success_regex: None,
-                }),
+                request: Some(test_request("http://127.0.0.1")),
             }],
         };
 
@@ -427,10 +429,112 @@ mod tests {
         validate_config(&mut config).expect("validation should succeed and fill default request");
         let task = &config.tasks[0];
         let req = task.request.as_ref().expect("request must be populated");
-        assert_eq!(req.method, "GET");
-        assert!(req.url.contains("api.dynu.com"));
-        assert!(req.url.contains("{{password}}"));
+        assert_eq!(req.method(), "GET");
+        assert!(req.url().contains("api.dynu.com"));
+        assert!(req.url().contains("{{password}}"));
         assert_eq!(req.success_regex.as_deref(), Some("^(good|nochg)"));
+    }
+
+    #[test]
+    fn test_provider_with_request_overrides_proxy_and_tls_insecure() {
+        let mut args = std::collections::HashMap::new();
+        args.insert("password".to_string(), "my_pass".to_string());
+
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "test".to_string(),
+                interval: Some(300),
+                retry_interval: None,
+                dns_server: None,
+                ipv4: Some(IpStrategyConfig {
+                    enabled: true,
+                    source: "remote".to_string(),
+                    urls: vec!["http://127.0.0.1".to_string()],
+                    interface: None,
+                    ipv6_prefix: None,
+                    prefer_slaac: false,
+                    ipv6_regex: None,
+                    allow_private: false,
+                }),
+                ipv6: None,
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "dynu_task".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: Some("test.freeddns.org".to_string()),
+                provider: Some("dynu".to_string()),
+                args,
+                request: Some(RequestConfig {
+                    proxy: Some("http://127.0.0.1:7890".to_string()),
+                    tls_insecure: Some(true),
+                    ..Default::default()
+                }),
+            }],
+        };
+
+        validate_config(&mut config).expect("validation should succeed and merge request");
+        let task = &config.tasks[0];
+        let req = task.request.as_ref().expect("request must be populated");
+        assert_eq!(req.method(), "GET");
+        assert!(req.url().contains("api.dynu.com"));
+        assert!(req.url().contains("{{password}}"));
+        assert_eq!(req.success_regex.as_deref(), Some("^(good|nochg)"));
+        assert_eq!(req.proxy.as_deref(), Some("http://127.0.0.1:7890"));
+        assert!(req.tls_insecure());
+    }
+
+    #[test]
+    fn test_provider_with_header_merging() {
+        let mut args = std::collections::HashMap::new();
+        args.insert("password".to_string(), "my_pass".to_string());
+
+        let mut custom_headers = std::collections::HashMap::new();
+        custom_headers.insert("X-Custom-Header".to_string(), "custom_val".to_string());
+
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "test".to_string(),
+                interval: Some(300),
+                retry_interval: None,
+                dns_server: None,
+                ipv4: Some(IpStrategyConfig {
+                    enabled: true,
+                    source: "remote".to_string(),
+                    urls: vec!["http://127.0.0.1".to_string()],
+                    interface: None,
+                    ipv6_prefix: None,
+                    prefer_slaac: false,
+                    ipv6_regex: None,
+                    allow_private: false,
+                }),
+                ipv6: None,
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "dynu_task".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: Some("test.freeddns.org".to_string()),
+                provider: Some("dynu".to_string()),
+                args,
+                request: Some(RequestConfig {
+                    headers: custom_headers,
+                    ..Default::default()
+                }),
+            }],
+        };
+
+        validate_config(&mut config).expect("validation should succeed");
+        let task = &config.tasks[0];
+        let req = task.request.as_ref().expect("request must be populated");
+        assert_eq!(
+            req.headers.get("X-Custom-Header").map(|s| s.as_str()),
+            Some("custom_val")
+        );
     }
 
     #[test]
@@ -542,16 +646,7 @@ mod tests {
                 domain: None,
                 provider: None,
                 args: Default::default(),
-                request: Some(RequestConfig {
-                    method: "GET".to_string(),
-                    url: "http://127.0.0.1".to_string(),
-                    headers: Default::default(),
-                    body: None,
-                    tls_insecure: false,
-                    proxy: None,
-                    success_contains: vec![],
-                    success_regex: None,
-                }),
+                request: Some(test_request("http://127.0.0.1")),
             }],
         };
 
@@ -591,16 +686,7 @@ mod tests {
                 domain: None,
                 provider: None,
                 args: Default::default(),
-                request: Some(RequestConfig {
-                    method: "GET".to_string(),
-                    url: "http://127.0.0.1".to_string(),
-                    headers: Default::default(),
-                    body: None,
-                    tls_insecure: false,
-                    proxy: None,
-                    success_contains: vec![],
-                    success_regex: None,
-                }),
+                request: Some(test_request("http://127.0.0.1")),
             }],
         };
 
@@ -643,16 +729,7 @@ mod tests {
                 domain: None,
                 provider: None,
                 args: Default::default(),
-                request: Some(RequestConfig {
-                    method: "GET".to_string(),
-                    url: "http://127.0.0.1".to_string(),
-                    headers: Default::default(),
-                    body: None,
-                    tls_insecure: false,
-                    proxy: None,
-                    success_contains: vec![],
-                    success_regex: None,
-                }),
+                request: Some(test_request("http://127.0.0.1")),
             }],
         };
 
@@ -692,16 +769,7 @@ mod tests {
                 domain: None,
                 provider: None,
                 args: Default::default(),
-                request: Some(RequestConfig {
-                    method: "GET".to_string(),
-                    url: "http://127.0.0.1".to_string(),
-                    headers: Default::default(),
-                    body: None,
-                    tls_insecure: false,
-                    proxy: None,
-                    success_contains: vec![],
-                    success_regex: None,
-                }),
+                request: Some(test_request("http://127.0.0.1")),
             }],
         };
 
@@ -741,16 +809,7 @@ mod tests {
                 domain: None,
                 provider: None,
                 args: Default::default(),
-                request: Some(RequestConfig {
-                    method: "GET".to_string(),
-                    url: "http://127.0.0.1".to_string(),
-                    headers: Default::default(),
-                    body: None,
-                    tls_insecure: false,
-                    proxy: None,
-                    success_contains: vec![],
-                    success_regex: None,
-                }),
+                request: Some(test_request("http://127.0.0.1")),
             }],
         };
 
@@ -781,16 +840,7 @@ mod tests {
                 domain: None,
                 provider: None,
                 args: Default::default(),
-                request: Some(RequestConfig {
-                    method: "GET".to_string(),
-                    url: "http://127.0.0.1".to_string(),
-                    headers: Default::default(),
-                    body: None,
-                    tls_insecure: false,
-                    proxy: None,
-                    success_contains: vec![],
-                    success_regex: None,
-                }),
+                request: Some(test_request("http://127.0.0.1")),
             }],
         };
 

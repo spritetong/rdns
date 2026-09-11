@@ -293,6 +293,8 @@ sequenceDiagram
 
 * **Strongly Typed Deserialization**: Uses `serde_yaml` to deserialize configurations into typed Rust structures.
 * **Environment Variable Expansion**: Recursively parses `${VARIABLE:-default}` expressions during YAML deserialization, keeping secrets out of configuration files.
+* **Provider Template & Request Merging**:
+  When a task specifies `provider`, `p.default_request()` provides the base `RequestConfig`. Any fields defined under `task.request` override the template (`proxy`, `tls_insecure`, `url`, `method`, `body`, `success_regex`, `success_contains`), and `headers` are merged key-by-key. Standalone custom tasks (without `provider`) have defaults filled via `fill_defaults()`.
 * **Validation (Parse, Don't Validate)**:
   Centrally validates URL formats, positive intervals, non-empty interface names, and compiles regular expressions into cached `regex::Regex` instances during initialization.
 
@@ -348,9 +350,11 @@ To prevent undetected record drift when cloud records are modified out-of-band, 
 #### 1. Client Caching & Per-Task Connection Pools (`engine/client.rs` & `engine/executor.rs`)
 
 * Maintains a default `reqwest::Client` with connection pooling for general use.
-* **Per-Task Connection Pools (`(Option<proxy>, tls_insecure)`)**:
-  * `RequestExecutor` maintains a custom client pool using `parking_lot::RwLock<HashMap<(Option<String>, bool), reqwest::Client>>`.
-  * Tasks configured with `tls_insecure: true` or dedicated proxies construct and cache separate clients.
+* **Global Proxy Fallback & Per-Task Connection Pools (`(Option<effective_proxy>, tls_insecure)`)**:
+  * `RequestExecutor` stores the global default proxy (`Option<String>`).
+  * Computes `effective_proxy = req_cfg.proxy.as_deref().or(self.default_proxy.as_deref())`.
+  * If `tls_insecure: false` and `effective_proxy` matches the global proxy, requests directly reuse `default_client`.
+  * For tasks with `tls_insecure: true` or custom dedicated proxies, separate HTTP clients are created and cached in `parking_lot::RwLock<HashMap<(Option<String>, bool), reqwest::Client>>` keyed by `(effective_proxy, tls_insecure)`.
   * Emits security warnings when `tls_insecure: true` is active:
     `tracing::warn!(task = %task_name, "Task configured with tls_insecure: true. TLS certificate verification is DISABLED.");`
 * **TLS Security**:

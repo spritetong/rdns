@@ -164,12 +164,13 @@ fn default_true() -> bool {
 }
 
 /// HTTP request template configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct RequestConfig {
-    #[serde(default = "default_method")]
-    pub method: String,
+    #[serde(default)]
+    pub method: Option<String>,
 
-    pub url: String,
+    #[serde(default)]
+    pub url: Option<String>,
 
     #[serde(default)]
     pub headers: HashMap<String, String>,
@@ -180,16 +181,73 @@ pub struct RequestConfig {
     pub success_regex: Option<String>,
 
     #[serde(default)]
-    pub success_contains: Vec<String>,
+    pub success_contains: Option<Vec<String>>,
 
     #[serde(default)]
-    pub tls_insecure: bool,
+    pub tls_insecure: Option<bool>,
 
     pub proxy: Option<String>,
 }
 
-fn default_method() -> String {
-    "GET".to_string()
+impl RequestConfig {
+    pub fn method(&self) -> &str {
+        self.method.as_deref().unwrap_or("GET")
+    }
+
+    pub fn url(&self) -> &str {
+        self.url.as_deref().unwrap_or("")
+    }
+
+    pub fn tls_insecure(&self) -> bool {
+        self.tls_insecure.unwrap_or(false)
+    }
+
+    pub fn success_contains(&self) -> &[String] {
+        self.success_contains.as_deref().unwrap_or(&[])
+    }
+
+    /// Merge overrides from `override_req` into `self`.
+    /// User-specified fields in `override_req` will overwrite corresponding fields in `self`.
+    /// Headers are merged: user-specified keys will overwrite or add to existing keys.
+    pub fn merge(&mut self, override_req: RequestConfig) {
+        if let Some(method) = override_req.method {
+            self.method = Some(method);
+        }
+        if let Some(url) = override_req.url {
+            self.url = Some(url);
+        }
+        for (k, v) in override_req.headers {
+            self.headers.insert(k, v);
+        }
+        if override_req.body.is_some() {
+            self.body = override_req.body;
+        }
+        if override_req.success_regex.is_some() {
+            self.success_regex = override_req.success_regex;
+        }
+        if override_req.success_contains.is_some() {
+            self.success_contains = override_req.success_contains;
+        }
+        if override_req.tls_insecure.is_some() {
+            self.tls_insecure = override_req.tls_insecure;
+        }
+        if override_req.proxy.is_some() {
+            self.proxy = override_req.proxy;
+        }
+    }
+
+    /// Fill standard defaults when no provider template is used.
+    pub fn fill_defaults(&mut self) {
+        if self.method.is_none() {
+            self.method = Some("GET".to_string());
+        }
+        if self.tls_insecure.is_none() {
+            self.tls_insecure = Some(false);
+        }
+        if self.success_contains.is_none() {
+            self.success_contains = Some(vec![]);
+        }
+    }
 }
 
 /// Generic notification settings.

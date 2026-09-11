@@ -578,14 +578,8 @@ mod tests {
             provider: None,
             args: HashMap::new(),
             request: Some(RequestConfig {
-                method: "GET".to_string(),
-                url: "http://127.0.0.1:1/unreachable".to_string(), // port 1 fails fast
-                headers: HashMap::new(),
-                body: None,
-                success_regex: None,
-                success_contains: vec![],
-                tls_insecure: false,
-                proxy: None,
+                url: Some("http://127.0.0.1:1/unreachable".to_string()),
+                ..Default::default()
             }),
         };
 
@@ -634,14 +628,8 @@ mod tests {
             provider: None,
             args: HashMap::new(),
             request: Some(RequestConfig {
-                method: "GET".to_string(),
-                url: "http://example.com".to_string(),
-                headers: HashMap::new(),
-                body: None,
-                success_regex: None,
-                success_contains: vec![],
-                tls_insecure: false,
-                proxy: None,
+                url: Some("http://example.com".to_string()),
+                ..Default::default()
             }),
         };
 
@@ -769,14 +757,9 @@ mod tests {
             provider: None,
             args: HashMap::new(),
             request: Some(RequestConfig {
-                method: "GET".to_string(),
-                url: format!("http://{}/update", addr),
-                headers: HashMap::new(),
-                body: None,
-                success_regex: None,
-                success_contains: vec!["good".to_string()],
-                tls_insecure: false,
-                proxy: None,
+                url: Some(format!("http://{}/update", addr)),
+                success_contains: Some(vec!["good".to_string()]),
+                ..Default::default()
             }),
         };
 
@@ -820,14 +803,8 @@ mod tests {
             provider: None,
             args: HashMap::new(),
             request: Some(RequestConfig {
-                method: "GET".to_string(),
-                url: "http://127.0.0.1:1/unreachable".to_string(),
-                headers: HashMap::new(),
-                body: None,
-                success_regex: None,
-                success_contains: vec![],
-                tls_insecure: false,
-                proxy: None,
+                url: Some("http://127.0.0.1:1/unreachable".to_string()),
+                ..Default::default()
             }),
         };
 
@@ -879,14 +856,8 @@ mod tests {
             provider: None,
             args: HashMap::new(),
             request: Some(RequestConfig {
-                method: "GET".to_string(),
-                url: "http://127.0.0.1:1/unreachable".to_string(), // will fail
-                headers: HashMap::new(),
-                body: None,
-                success_regex: None,
-                success_contains: vec![],
-                tls_insecure: false,
-                proxy: None,
+                url: Some("http://127.0.0.1:1/unreachable".to_string()),
+                ..Default::default()
             }),
         };
 
