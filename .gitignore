@@ -5,3 +5,4 @@ state.json
 __pycache__/
 *.pyc
 /Makefile
+config.yaml

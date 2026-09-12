@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+// rdns is licensed under the GNU GPL v3.0 or later.
+
 //! Secure placeholder template replacement.
 
 use crate::error::TemplateError;

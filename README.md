@@ -95,6 +95,12 @@ rdns --no-netwatcher -c config.yaml
 
 ## ⚙️ Configuration (`config.yaml`)
 
+Copy `config-example.yaml` to `config.yaml` and adjust it to your environment:
+
+```bash
+cp config-example.yaml config.yaml
+```
+
 ```yaml
 global:
   interval: 300                # Default polling interval in seconds
