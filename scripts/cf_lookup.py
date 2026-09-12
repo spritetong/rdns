@@ -21,6 +21,8 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+sys.dont_write_bytecode = True
+
 API_BASE_URL = 'https://api.cloudflare.com/client/v4'
 
 
