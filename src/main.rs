@@ -10,6 +10,7 @@ mod notification;
 mod persistence;
 pub mod provider;
 mod scheduler;
+pub mod watcher;
 
 use clap::Parser;
 use cli::Cli;
@@ -121,7 +122,7 @@ fn main() -> ExitCode {
     }
 
     // 2. Load and validate config
-    let config = match load_config(&cli.config) {
+    let mut config = match load_config(&cli.config) {
         Ok(mut cfg) => match validate_config(&mut cfg) {
             Ok(()) => cfg,
             Err(e) => {
@@ -144,6 +145,11 @@ fn main() -> ExitCode {
         && let Some(no_state) = config.global.no_state
     {
         cli.no_state = no_state;
+    }
+
+    // Override `netwatcher` flag
+    if cli.no_netwatcher {
+        config.global.netwatcher = false;
     }
 
     // 3. Initialize logging

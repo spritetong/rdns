@@ -64,6 +64,14 @@ pub struct GlobalConfig {
 
     /// Global default DNS server for verifying cloud records
     pub dns_server: Option<String>,
+
+    /// Enable event-driven network change detection via netwatcher (default: true)
+    #[serde(default = "default_netwatcher")]
+    pub netwatcher: bool,
+
+    /// Debounce duration in milliseconds for network change events (default: 2000)
+    #[serde(default = "default_netwatcher_debounce_ms")]
+    pub netwatcher_debounce_ms: u64,
 }
 
 fn default_interval() -> u64 {
@@ -86,6 +94,14 @@ fn default_log_level() -> String {
     "info".to_string()
 }
 
+fn default_netwatcher() -> bool {
+    true
+}
+
+fn default_netwatcher_debounce_ms() -> u64 {
+    2000
+}
+
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
@@ -98,6 +114,8 @@ impl Default for GlobalConfig {
             log_level: default_log_level(),
             proxy: None,
             dns_server: None,
+            netwatcher: default_netwatcher(),
+            netwatcher_debounce_ms: default_netwatcher_debounce_ms(),
         }
     }
 }

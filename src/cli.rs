@@ -66,6 +66,10 @@ pub struct Cli {
     )]
     pub no_state: bool,
 
+    /// Disable netwatcher event-driven network change detection (fallback to timer polling)
+    #[arg(long = "no-netwatcher")]
+    pub no_netwatcher: bool,
+
     /// Log level filter (trace, debug, info, warn, error, off) [default: info]
     #[arg(
         short = 'l',

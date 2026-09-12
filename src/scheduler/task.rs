@@ -9,6 +9,7 @@ use crate::persistence::StateStore;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use parking_lot::Mutex;
@@ -404,6 +405,7 @@ pub struct InterfaceScheduler {
     tasks: Vec<Arc<TaskExecutor>>,
     normal_interval: Duration,
     retry_interval: Duration,
+    network_notifier: Option<Arc<Notify>>,
 }
 
 impl InterfaceScheduler {
@@ -413,6 +415,7 @@ impl InterfaceScheduler {
         default_interval_secs: u64,
         default_retry_interval_secs: u64,
         timeout: Duration,
+        network_notifier: Option<Arc<Notify>>,
     ) -> Self {
         let interval_secs = config.interval.unwrap_or(default_interval_secs);
         let retry_secs = config.retry_interval.unwrap_or(default_retry_interval_secs);
@@ -424,6 +427,7 @@ impl InterfaceScheduler {
             tasks,
             normal_interval: Duration::from_secs(interval_secs),
             retry_interval: Duration::from_secs(retry_secs),
+            network_notifier,
         }
     }
 
@@ -570,6 +574,14 @@ impl InterfaceScheduler {
                 self.normal_interval
             };
 
+            let net_notified = async {
+                if let Some(ref notifier) = self.network_notifier {
+                    notifier.notified().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+
             tokio::select! {
                 _ = token.cancelled() => {
                     tracing::info!(
@@ -577,6 +589,12 @@ impl InterfaceScheduler {
                         iface_name
                     );
                     break;
+                }
+                _ = net_notified => {
+                    tracing::info!(
+                        "[{}] Network change event detected, triggering immediate check",
+                        iface_name
+                    );
                 }
                 _ = tokio::time::sleep(next_interval) => {}
             }
