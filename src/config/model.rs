@@ -72,6 +72,10 @@ pub struct GlobalConfig {
     /// Debounce duration in milliseconds for network change events (default: 2000)
     #[serde(default = "default_netwatcher_debounce_ms")]
     pub netwatcher_debounce_ms: u64,
+
+    /// Optional path to custom CA certificates file (PEM bundle or DER format)
+    #[serde(default, alias = "ca_certs", alias = "ca_cert", alias = "cacert")]
+    pub cacerts: Option<String>,
 }
 
 fn default_interval() -> u64 {
@@ -116,6 +120,7 @@ impl Default for GlobalConfig {
             dns_server: None,
             netwatcher: default_netwatcher(),
             netwatcher_debounce_ms: default_netwatcher_debounce_ms(),
+            cacerts: None,
         }
     }
 }
@@ -205,6 +210,10 @@ pub struct RequestConfig {
     pub tls_insecure: Option<bool>,
 
     pub proxy: Option<String>,
+
+    /// Optional path to custom CA certificates file (PEM bundle or DER format)
+    #[serde(default, alias = "ca_certs", alias = "ca_cert", alias = "cacert")]
+    pub cacerts: Option<String>,
 }
 
 impl RequestConfig {
@@ -251,6 +260,9 @@ impl RequestConfig {
         }
         if override_req.proxy.is_some() {
             self.proxy = override_req.proxy;
+        }
+        if override_req.cacerts.is_some() {
+            self.cacerts = override_req.cacerts;
         }
     }
 

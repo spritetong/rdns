@@ -22,9 +22,19 @@ pub struct HttpEngine {
 impl HttpEngine {
     pub fn new(global: &GlobalConfig) -> Result<Self, RdnsError> {
         let timeout = Duration::from_secs(global.timeout);
-        let client = build_http_client(timeout, global.proxy.as_deref(), false)?;
+        let client = build_http_client(
+            timeout,
+            global.proxy.as_deref(),
+            false,
+            global.cacerts.as_deref(),
+        )?;
         Ok(Self {
-            executor: Arc::new(RequestExecutor::new(client, global.proxy.clone(), timeout)),
+            executor: Arc::new(RequestExecutor::new(
+                client,
+                global.proxy.clone(),
+                global.cacerts.clone(),
+                timeout,
+            )),
         })
     }
 

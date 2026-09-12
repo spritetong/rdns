@@ -74,6 +74,21 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
         validate_dns_server(dns, "global.dns_server")?;
     }
 
+    if let Some(ref cacerts) = config.global.cacerts {
+        if cacerts.trim().is_empty() {
+            return Err(ConfigError::Validation {
+                field: "global.cacerts".to_string(),
+                message: "CA certificates file path cannot be empty".to_string(),
+            });
+        }
+        if !std::path::Path::new(cacerts).exists() {
+            return Err(ConfigError::Validation {
+                field: "global.cacerts".to_string(),
+                message: format!("CA certificates file '{}' does not exist", cacerts),
+            });
+        }
+    }
+
     let mut iface_names = HashSet::new();
     for iface in &config.interfaces {
         if iface.name.trim().is_empty() {
@@ -319,6 +334,22 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
                 field: format!("tasks[{}].request.success_regex", task.name),
                 message: format!("Invalid regex pattern '{}': {}", reg, e),
             })?;
+        }
+
+        // Validate cacerts file if present
+        if let Some(ref cacerts) = req.cacerts {
+            if cacerts.trim().is_empty() {
+                return Err(ConfigError::Validation {
+                    field: format!("tasks[{}].request.cacerts", task.name),
+                    message: "CA certificates file path cannot be empty".to_string(),
+                });
+            }
+            if !std::path::Path::new(cacerts).exists() {
+                return Err(ConfigError::Validation {
+                    field: format!("tasks[{}].request.cacerts", task.name),
+                    message: format!("CA certificates file '{}' does not exist", cacerts),
+                });
+            }
         }
     }
 
@@ -846,5 +877,40 @@ mod tests {
 
         let err = validate_config(&mut config).unwrap_err();
         assert!(err.to_string().contains("global.log_level"));
+    }
+
+    #[test]
+    fn test_cacerts_validation() {
+        let mut config = Config {
+            global: crate::config::model::GlobalConfig {
+                cacerts: Some("non_existent_certs_file.pem".to_string()),
+                ..Default::default()
+            },
+            interfaces: vec![InterfaceConfig {
+                name: "eth0".to_string(),
+                interval: None,
+                retry_interval: None,
+                dns_server: None,
+                ipv4: None,
+                ipv6: None,
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(test_request("http://127.0.0.1")),
+            }],
+        };
+
+        let err = validate_config(&mut config).unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
+
+        config.global.cacerts = Some("   ".to_string());
+        let err2 = validate_config(&mut config).unwrap_err();
+        assert!(err2.to_string().contains("cannot be empty"));
     }
 }

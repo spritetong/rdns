@@ -42,6 +42,7 @@ impl Provider {
             ),
             tls_insecure: Some(false),
             proxy: None,
+            cacerts: None,
         }
     }
 }

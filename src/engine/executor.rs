@@ -12,18 +12,27 @@ use std::time::Duration;
 
 pub const MAX_RESP_BODY_SIZE: usize = 1024 * 1024; // 1 MiB
 
+type ClientCacheKey = (Option<String>, bool, Option<String>);
+
 pub struct RequestExecutor {
     default_client: reqwest::Client,
     default_proxy: Option<String>,
+    default_cacerts: Option<String>,
     timeout: Duration,
-    custom_clients: parking_lot::RwLock<HashMap<(Option<String>, bool), reqwest::Client>>,
+    custom_clients: parking_lot::RwLock<HashMap<ClientCacheKey, reqwest::Client>>,
 }
 
 impl RequestExecutor {
-    pub fn new(client: reqwest::Client, default_proxy: Option<String>, timeout: Duration) -> Self {
+    pub fn new(
+        client: reqwest::Client,
+        default_proxy: Option<String>,
+        default_cacerts: Option<String>,
+        timeout: Duration,
+    ) -> Self {
         Self {
             default_client: client,
             default_proxy,
+            default_cacerts,
             timeout,
             custom_clients: parking_lot::RwLock::new(HashMap::new()),
         }
@@ -38,8 +47,13 @@ impl RequestExecutor {
         task_name: &str,
         proxy: Option<&str>,
         tls_insecure: bool,
+        cacerts: Option<&str>,
     ) -> Result<reqwest::Client, RdnsError> {
-        let key = (proxy.map(str::to_string), tls_insecure);
+        let key = (
+            proxy.map(str::to_string),
+            tls_insecure,
+            cacerts.map(str::to_string),
+        );
         {
             let read_guard = self.custom_clients.read();
             if let Some(client) = read_guard.get(&key) {
@@ -63,6 +77,7 @@ impl RequestExecutor {
             self.timeout,
             proxy,
             tls_insecure,
+            cacerts,
         )?;
 
         write_guard.insert(key, client.clone());
@@ -99,6 +114,10 @@ impl RequestExecutor {
         };
 
         let effective_proxy = req_cfg.proxy.as_deref().or(self.default_proxy.as_deref());
+        let effective_cacerts = req_cfg
+            .cacerts
+            .as_deref()
+            .or(self.default_cacerts.as_deref());
 
         // 4. Handle Dry-Run Mode
         if dry_run {
@@ -128,6 +147,11 @@ impl RequestExecutor {
             if req_cfg.tls_insecure() {
                 println!("TLS Insecure:       true (CERTIFICATE VALIDATION DISABLED)");
             }
+            if let Some(c) = effective_cacerts
+                && !c.trim().is_empty()
+            {
+                println!("CA Certs:           {}", c);
+            }
             if let Some(p) = effective_proxy
                 && !p.trim().is_empty()
             {
@@ -137,12 +161,18 @@ impl RequestExecutor {
             return Ok(());
         }
 
-        // 5. Select appropriate HTTP client (cached by proxy/tls_insecure config)
+        // 5. Select appropriate HTTP client (cached by proxy/tls_insecure/cacerts config)
         let is_default_proxy = effective_proxy == self.default_proxy.as_deref();
-        let client = if !req_cfg.tls_insecure() && is_default_proxy {
+        let is_default_cacerts = effective_cacerts == self.default_cacerts.as_deref();
+        let client = if !req_cfg.tls_insecure() && is_default_proxy && is_default_cacerts {
             self.default_client.clone()
         } else {
-            self.get_or_create_custom_client(task_name, effective_proxy, req_cfg.tls_insecure())?
+            self.get_or_create_custom_client(
+                task_name,
+                effective_proxy,
+                req_cfg.tls_insecure(),
+                effective_cacerts,
+            )?
         };
 
         // 6. Execute Live Request
@@ -357,6 +387,7 @@ mod tests {
         let executor = RequestExecutor::new(
             client,
             Some("http://127.0.0.1:7890".to_string()),
+            None,
             Duration::from_secs(10),
         );
         let req_cfg = RequestConfig {
@@ -383,18 +414,19 @@ mod tests {
         let executor = RequestExecutor::new(
             client,
             Some("http://127.0.0.1:7890".to_string()),
+            None,
             Duration::from_secs(10),
         );
 
         let _c1 = executor
-            .get_or_create_custom_client("t1", Some("http://127.0.0.1:7890"), true)
+            .get_or_create_custom_client("t1", Some("http://127.0.0.1:7890"), true, None)
             .expect("client creation succeeds");
         let _c2 = executor
-            .get_or_create_custom_client("t2", Some("http://127.0.0.1:7890"), true)
+            .get_or_create_custom_client("t2", Some("http://127.0.0.1:7890"), true, None)
             .expect("client reuse succeeds");
 
         assert_eq!(executor.custom_clients.read().len(), 1);
-        let key = (Some("http://127.0.0.1:7890".to_string()), true);
+        let key = (Some("http://127.0.0.1:7890".to_string()), true, None);
         assert!(executor.custom_clients.read().contains_key(&key));
     }
 }

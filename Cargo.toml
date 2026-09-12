@@ -2,6 +2,11 @@
 name = "rdns"
 version = "0.1.0"
 edition = "2024"
+authors = ["Sprite Tong <spritetong@gmail.com>"]
+license = "GPL-3.0-or-later"
+description = "A lightweight, robust, asynchronous Dynamic DNS (DDNS) daemon written in Rust"
+repository = "https://github.com/spritetong/rdns"
+readme = "README.md"
 
 [profile.release]
 lto = "fat"
@@ -15,17 +20,18 @@ strip = true
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 parking_lot = "0.12"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "socks"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "socks"] }
+rustls-native-certs = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
-serde_json = "1.0"
-shellexpand = "3.1"
-regex = "1.10"
-thiserror = "2.0"
+serde_json = "1"
+shellexpand = "3"
+regex = "1"
+thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
-hickory-resolver = { version = "0.26.2", features = ["tokio"] }
-ifaddrsx = "0.4.1"
+hickory-resolver = { version = "0.26", features = ["tokio"] }
+ifaddrsx = "0.4"
 netwatcher = { version = "0.8", features = ["tokio"] }

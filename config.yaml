@@ -6,6 +6,7 @@ global:
   worker_threads: 2 # Tokio worker threads (set to 1 for ultra-lightweight single-thread; omitted defaults to CPU core count)
   log_level: "info" # trace | debug | info | warn | error | off
   # proxy: "http://127.0.0.1:7890" # Optional global proxy (supports http / socks5)
+  # cacerts: "/path/to/custom-ca-bundle.pem" # Optional custom CA certificates file (PEM bundle or DER)
 
 # Generic notification system (optional)
 notification:
