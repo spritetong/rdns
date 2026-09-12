@@ -5,7 +5,13 @@ use std::path::PathBuf;
 
 /// RDNS - Modern, Lightweight, Webhook-driven DDNS Client
 #[derive(Parser, Debug, Clone)]
-#[command(name = "rdns", version, about, long_about = None)]
+#[command(
+    name = "rdns",
+    version,
+    about,
+    long_about = None,
+    after_help = "Cloudflare Helper:\n  Use 'python scripts/cf_lookup.py -d <DOMAIN>' to query Zone ID and Record IDs from Cloudflare."
+)]
 pub struct Cli {
     /// Path to YAML configuration file
     #[arg(short = 'c', long = "config", default_value = "config.yaml")]
@@ -31,7 +37,7 @@ pub struct Cli {
     #[arg(long = "list-providers")]
     pub list_providers: bool,
 
-    /// Query and show default request template and details for a predefined provider
+    /// Query and show default request template and details for a predefined provider (for Cloudflare, see also 'python scripts/cf_lookup.py')
     #[arg(
         long = "show-provider",
         visible_alias = "provider",

@@ -413,6 +413,9 @@ pub fn format_providers_list() -> String {
     out.push_str(
         "Use 'rdns --provider <NAME>' to view complete details and YAML configuration examples.\n",
     );
+    out.push_str(
+        "For Cloudflare, run 'python scripts/cf_lookup.py -d <DOMAIN>' to query Zone and Record IDs.\n",
+    );
     out
 }
 
@@ -478,6 +481,11 @@ pub fn format_provider_detail(name: &str) -> Result<String, String> {
     out.push_str("tasks:\n");
     out.push_str(p.example_yaml);
     out.push('\n');
+
+    if p.name.starts_with("cloudflare") {
+        out.push_str("\nCloudflare Helper Tool:\n");
+        out.push_str("  Run 'python scripts/cf_lookup.py -d <DOMAIN>' to automatically query Zone ID and Record IDs.\n");
+    }
 
     Ok(out)
 }
@@ -590,6 +598,7 @@ mod tests {
         assert!(cf_detail.contains("Provider:     cloudflare"));
         assert!(cf_detail.contains("Authorization: Bearer {{token}}"));
         assert!(cf_detail.contains("record_id_v4"));
+        assert!(cf_detail.contains("cf_lookup.py"));
 
         let err = format_provider_detail("invalid_xyz").unwrap_err();
         assert!(err.contains("Unknown provider"));

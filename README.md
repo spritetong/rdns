@@ -249,6 +249,15 @@ tasks:
 
 #### Cloudflare
 
+> [!TIP]
+> **Cloudflare Helper Script**: If you don't know your `zone_id` or `record_id`, use the helper script [`scripts/cf_lookup.py`](scripts/cf_lookup.py) (uses Python standard library only) to automatically discover your Zone ID and DNS Record IDs, and generate ready-to-use YAML task configurations:
+>
+> ```bash
+> python scripts/cf_lookup.py -d sub.example.com
+> ```
+>
+> *(Interactive prompt for your API token if omitted or not exported in `CF_API_TOKEN`)*
+
 Dual-stack atomic update (single batch API call updating both A and AAAA records):
 
 ```yaml
@@ -432,16 +441,39 @@ tasks:
 Usage: rdns [OPTIONS]
 
 Options:
-  -c, --config <CONFIG>          Path to YAML configuration file [default: config.yaml]
-      --check                    Validate configuration syntax and parameters then exit
-      --dry-run                  Render templates and preview requests without sending
-      --once                     Execute a single update cycle then exit
-      --no-state                 Disable writing state file to disk
-      --no-netwatcher            Disable event-driven network change monitoring
-  -w, --worker-threads <THREADS> Number of Tokio worker threads (overrides config)
-  -l, --log-level <LOG_LEVEL>    Log level filter [possible values: trace, debug, info, warn, error, off]
-  -h, --help                     Print help
-  -V, --version                  Print version
+  -c, --config <CONFIG>
+          Path to YAML configuration file [default: config.yaml]
+      --once
+          Single execution mode: update once and immediately exit
+      --daemon
+          Long-running daemon mode with asynchronous interval polling
+      --dry-run
+          Dry-run mode: fetch IP and render templates without sending live HTTP write requests
+      --check
+          Validate configuration syntax and interface existence without running
+      --list-providers
+          List all predefined DDNS providers and their templates
+      --show-provider <NAME>
+          Query and show default request template and details for a predefined provider (for Cloudflare, see also 'python scripts/cf_lookup.py') [alias: --provider]
+  -t, --worker-threads <THREADS>
+          Number of Tokio runtime worker threads (1 for single-thread lightweight runtime)
+  -s, --state <PATH>
+          Override the path to the state persistence JSON file
+      --write-state [<BOOL>]
+          Control whether to write the state persistence file to disk (true/false) [alias: --save-state]
+      --no-state
+          Disable writing the state persistence file to disk [aliases: --no-state-file, --no-save-state]
+      --no-netwatcher
+          Disable netwatcher event-driven network change detection (fallback to timer polling)
+  -l, --log-level <LEVEL>
+          Log level filter (trace, debug, info, warn, error, off) [default: info]
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+
+Cloudflare Helper:
+  Use 'python scripts/cf_lookup.py -d <DOMAIN>' to query Zone ID and Record IDs from Cloudflare.
 ```
 
 ---
