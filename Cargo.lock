@@ -796,9 +796,9 @@ dependencies = [
 
 [[package]]
 name = "ifaddrsx"
-version = "0.4.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8de4051c9f1a03dfb2395e9c5d7e27d6e6ba2c76c8a14665d3844d3ef73602f9"
+checksum = "a02e65626ed718665aae1b585d022447ddd20dc46ee5a893e233b7ba6aeec70c"
 dependencies = [
  "bitflags",
  "ipnetwork",

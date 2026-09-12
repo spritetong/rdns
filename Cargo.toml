@@ -33,5 +33,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 hickory-resolver = { version = "0.26", features = ["tokio"] }
-ifaddrsx = "0.4"
+ifaddrsx = "0.5"
 netwatcher = { version = "0.8", features = ["tokio"] }

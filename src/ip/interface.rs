@@ -5,10 +5,10 @@
 //! Local network interface IP reader and intelligent address filter.
 
 use crate::error::IpFetchError;
-use ifaddrsx::get_interfaces;
+use ifaddrsx::{get_interfaces, AddrFlags, DadState, IfAddr};
 pub use ifaddrsx::{Ipv4AddrExt, Ipv6AddrExt};
 use regex::Regex;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub struct InterfaceIpFetcher {
     v4_interface_pattern: String,
@@ -141,33 +141,55 @@ impl InterfaceIpFetcher {
                 || self.v6_interface_regex.is_match(iface.friendly_name())
             {
                 matched_interface = true;
-                for ip in iface.ipv6_addrs() {
+                for addr in &iface.ips {
+                    let ip = match addr.ip() {
+                        IpAddr::V6(v6) => v6,
+                        _ => continue,
+                    };
+
                     if ip.is_loopback() || ip.is_multicast() {
                         continue;
                     }
-                    // Filter Link-Local (fe80::/10)
+
+                    // 1. Status check: precisely filter out deprecated, tentative (in DAD), or duplicate addresses
+                    if !is_preferred_ipv6_entry(addr) {
+                        tracing::debug!(
+                            "[{}] Skipping non-preferred IPv6 address {} (flags: {:?}, dad: {:?})",
+                            iface.name,
+                            ip,
+                            addr.flags,
+                            addr.dad_state
+                        );
+                        continue;
+                    }
+
+                    // 2. Base range: filter link-local (fe80::/10)
                     if ip.is_link_local_ipv6() {
                         continue;
                     }
-                    // Filter ULA (fc00::/7)
-                    if !self.allow_private_v6 && ip.is_unique_local_ipv6() {
+
+                    // 3. Base range: only global unicast (2000::/3) unless allow_private_v6 is explicitly enabled
+                    if !self.allow_private_v6 && !ip.is_global_unicast_ipv6() {
                         continue;
                     }
-                    // Check prefix if specified
+
+                    // 4. Prefix filter if specified
                     if let Some(ref prefix) = self.v6_prefix {
                         let ip_str = ip.to_string();
                         if !ip_str.starts_with(prefix) {
                             continue;
                         }
                     }
-                    // Check regex filter if specified
+
+                    // 5. Regex filter if specified
                     if let Some(ref reg) = self.v6_regex {
                         let ip_str = ip.to_string();
                         if !reg.is_match(&ip_str) {
                             continue;
                         }
                     }
-                    candidates.push(ip);
+
+                    candidates.push((ip, addr.is_temporary()));
                 }
             }
         }
@@ -186,13 +208,16 @@ impl InterfaceIpFetcher {
 
         // 1. Prioritize SLAAC (EUI-64) address if prefer_slaac is enabled
         if self.prefer_slaac
-            && let Some(&slaac_ip) = candidates.iter().find(|ip| ip.is_eui64_slaac())
+            && let Some(&(slaac_ip, _)) = candidates.iter().find(|(ip, _)| ip.is_eui64_slaac())
         {
             return Ok(slaac_ip);
         }
 
         // 2. Prioritize stable (non-temporary) IPv6 addresses (D4)
-        if let Some(&stable_ip) = candidates.iter().find(|ip| !ip.is_rfc4941_temporary()) {
+        if let Some(&(stable_ip, _)) = candidates
+            .iter()
+            .find(|(ip, is_temp)| !*is_temp && !ip.is_rfc4941_temporary())
+        {
             return Ok(stable_ip);
         }
 
@@ -201,8 +226,25 @@ impl InterfaceIpFetcher {
             "[{}] Only RFC 4941 temporary IPv6 address found, using as fallback",
             self.v6_interface_pattern
         );
-        Ok(candidates[0])
+        Ok(candidates[0].0)
     }
+}
+
+/// Determine whether an interface IPv6 address entry is valid and preferred for outbound DDNS.
+///
+/// Accurately filters out:
+/// - Deprecated addresses (`IFA_F_DEPRECATED`, `0x20`): occurs when router/ISP prefix ages out (preferred_lft == 0)
+/// - Tentative addresses (`IFA_F_TENTATIVE`, `0x40`): in DAD (Duplicate Address Detection) phase
+/// - Duplicate/failed addresses (`IFA_F_DADFAILED`, `0x08`): address collision detected by DAD
+#[inline]
+pub fn is_preferred_ipv6_entry(addr: &IfAddr) -> bool {
+    !addr.flags.contains(AddrFlags::DEPRECATED)
+        && !addr.flags.contains(AddrFlags::TENTATIVE)
+        && !addr.flags.contains(AddrFlags::DUPLICATE)
+        && addr.dad_state != DadState::Deprecated
+        && addr.dad_state != DadState::Tentative
+        && addr.dad_state != DadState::Duplicate
+        && addr.preferred_lifetime.is_none_or(|lft| lft > 0)
 }
 
 #[cfg(test)]
@@ -279,4 +321,67 @@ mod tests {
         let synthesized = Ipv6Addr::from_mac_slaac(&prefix, &mac);
         assert_eq!(synthesized, slaac);
     }
+
+    #[test]
+    fn test_is_preferred_ipv6_entry() {
+        use ifaddrsx::{AddrFlags, DadState, IfAddr, IpNetwork};
+
+        let net: IpNetwork = "240e:3a1:ec9:e531:dabb:c1ff:fe67:6221/64".parse().unwrap();
+
+        // 1. Normal preferred address
+        let mut addr = IfAddr::new(net);
+        assert!(is_preferred_ipv6_entry(&addr));
+
+        // 2. Deprecated flag (0x20)
+        addr.flags = AddrFlags::DEPRECATED;
+        addr.dad_state = DadState::Deprecated;
+        assert!(!is_preferred_ipv6_entry(&addr));
+
+        // 3. Tentative flag (0x40) - DAD in progress
+        addr.flags = AddrFlags::TENTATIVE;
+        addr.dad_state = DadState::Tentative;
+        assert!(!is_preferred_ipv6_entry(&addr));
+
+        // 4. Duplicate flag (0x08) - DAD failed
+        addr.flags = AddrFlags::DUPLICATE;
+        addr.dad_state = DadState::Duplicate;
+        assert!(!is_preferred_ipv6_entry(&addr));
+
+        // 5. Preferred lifetime == 0 (expired/deprecated)
+        addr.flags = AddrFlags::PREFERRED;
+        addr.dad_state = DadState::Preferred;
+        addr.preferred_lifetime = Some(0);
+        assert!(!is_preferred_ipv6_entry(&addr));
+
+        // 6. Preferred lifetime > 0
+        addr.preferred_lifetime = Some(3600);
+        assert!(is_preferred_ipv6_entry(&addr));
+
+        // 7. Preferred lifetime None (unspecified/infinite)
+        addr.preferred_lifetime = None;
+        assert!(is_preferred_ipv6_entry(&addr));
+    }
+
+    #[test]
+    fn test_is_global_unicast_ipv6() {
+        // Global unicast (2000::/3)
+        let gua: Ipv6Addr = "240e:3a1:ec9:e531::1".parse().unwrap();
+        assert!(gua.is_global_unicast_ipv6());
+
+        let cloudflare_dns: Ipv6Addr = "2606:4700:4700::1111".parse().unwrap();
+        assert!(cloudflare_dns.is_global_unicast_ipv6());
+
+        // Link-local (fe80::/10) - not global unicast
+        let link_local: Ipv6Addr = "fe80::1".parse().unwrap();
+        assert!(!link_local.is_global_unicast_ipv6());
+
+        // Unique local / private (fd00::/8) - not global unicast
+        let ula: Ipv6Addr = "fd12:3456:789a::1".parse().unwrap();
+        assert!(!ula.is_global_unicast_ipv6());
+
+        // Loopback (::1) - not global unicast
+        let loopback: Ipv6Addr = "::1".parse().unwrap();
+        assert!(!loopback.is_global_unicast_ipv6());
+    }
 }
+
