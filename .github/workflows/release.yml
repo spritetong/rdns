@@ -95,6 +95,8 @@ jobs:
           mkdir -p "${ARCHIVE_NAME}"
           cp "target/${{ matrix.target }}/release/rdns" "${ARCHIVE_NAME}/"
           cp README.md LICENSE config-example.yaml "${ARCHIVE_NAME}/"
+          cp -r scripts "${ARCHIVE_NAME}/"
+          rm -rf "${ARCHIVE_NAME}/scripts/__pycache__"
           tar -cJf "${ARCHIVE_NAME}.tar.xz" "${ARCHIVE_NAME}"
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "${ARCHIVE_NAME}.tar.xz" > "${ARCHIVE_NAME}.tar.xz.sha256"
@@ -111,6 +113,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $ArchiveName
           Copy-Item "target/${{ matrix.target }}/release/rdns.exe" -Destination $ArchiveName/
           Copy-Item README.md, LICENSE, config-example.yaml -Destination $ArchiveName/
+          Copy-Item scripts -Destination $ArchiveName/ -Recurse
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$ArchiveName/scripts/__pycache__"
           tar -cJf "${ArchiveName}.tar.xz" $ArchiveName
           $Hash = (Get-FileHash -Algorithm SHA256 "${ArchiveName}.tar.xz").Hash.ToLower()
           "$Hash  ${ArchiveName}.tar.xz" | Out-File -Encoding ascii "${ArchiveName}.tar.xz.sha256"
