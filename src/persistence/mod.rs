@@ -127,6 +127,32 @@ impl StateStore {
         self.states.read().get(task_name).cloned()
     }
 
+    /// Prune tasks from the state store that are not present in the active tasks list.
+    ///
+    /// When tasks are removed or renamed in configuration, their stale states are purged
+    /// from memory and disk to avoid state file bloat.
+    pub fn prune_stale_tasks(&self, active_task_names: &[impl AsRef<str>]) {
+        let active_set: std::collections::HashSet<&str> =
+            active_task_names.iter().map(|s| s.as_ref()).collect();
+
+        let modified = {
+            let mut map = self.states.write();
+            let before_len = map.len();
+            map.retain(|task_name, _| {
+                let keep = active_set.contains(task_name.as_str());
+                if !keep {
+                    tracing::info!("Pruned stale task '{}' from state store", task_name);
+                }
+                keep
+            });
+            map.len() != before_len
+        };
+
+        if modified && self.write_enabled {
+            self.save();
+        }
+    }
+
     /// Update state for a task and notify background worker for asynchronous disk persistence.
     pub fn update(
         &self,
@@ -287,4 +313,41 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn test_prune_stale_tasks() {
+        let dir = std::env::temp_dir().join(format!("rdns_state_prune_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        let store = StateStore::new(&path);
+        store.update("task-keep", Some("1.1.1.1".into()), None, 1000);
+        store.update("task-remove-1", Some("2.2.2.2".into()), None, 2000);
+        store.update("task-remove-2", Some("3.3.3.3".into()), None, 3000);
+        store.flush().await;
+
+        // Verify initial state on disk
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("task-keep"));
+        assert!(content.contains("task-remove-1"));
+        assert!(content.contains("task-remove-2"));
+
+        // Prune keeping only task-keep and a new task that has no state yet
+        store.prune_stale_tasks(&["task-keep", "task-new"]);
+
+        // In-memory verification
+        assert!(store.get("task-keep").is_some());
+        assert!(store.get("task-remove-1").is_none());
+        assert!(store.get("task-remove-2").is_none());
+
+        // On-disk verification
+        let pruned_content = std::fs::read_to_string(&path).unwrap();
+        assert!(pruned_content.contains("task-keep"));
+        assert!(!pruned_content.contains("task-remove-1"));
+        assert!(!pruned_content.contains("task-remove-2"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
+

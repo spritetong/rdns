@@ -39,6 +39,10 @@ impl SchedulerService {
         let default_retry_interval = config.global.retry_interval;
         let timeout = Duration::from_secs(config.global.timeout);
 
+        // Prune stale historical tasks from state store that are no longer in config
+        let active_tasks: Vec<&str> = config.tasks.iter().map(|t| t.name.as_str()).collect();
+        state_store.prune_stale_tasks(&active_tasks);
+
         // Group tasks by interface name.
         // If task does not specify an interface, default to the first interface in config.interfaces.
         let default_iface_name = config
