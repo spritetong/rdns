@@ -196,28 +196,28 @@ def generate_rdns_yaml(
             )
         elif v4_id:
             yaml_snippets.append(
-                f"""  # Single-stack IPv4 A record update
+                f"""  # IPv4 A record update (adaptive)
   - name: "cf-{sub_name}-v4"
     interface: "Local"
     domain: "{d}"
-    provider: "cloudflare-v4"
+    provider: "cloudflare"
     args:
       token: "${{CF_API_TOKEN}}"
       zone_id: "{zone_id}"
-      record_id: "{v4_id}"
+      record_id_v4: "{v4_id}"
 """
             )
         elif v6_id:
             yaml_snippets.append(
-                f"""  # Single-stack IPv6 AAAA record update
+                f"""  # IPv6 AAAA record update (adaptive)
   - name: "cf-{sub_name}-v6"
     interface: "Local"
     domain: "{d}"
-    provider: "cloudflare-v6"
+    provider: "cloudflare"
     args:
       token: "${{CF_API_TOKEN}}"
       zone_id: "{zone_id}"
-      record_id: "{v6_id}"
+      record_id_v6: "{v6_id}"
 """
             )
 

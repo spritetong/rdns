@@ -146,9 +146,10 @@ pub struct TaskConfig {
     pub provider: Option<String>,
 
     /// Additional named parameters for URL, header, and body templates (e.g. password, token).
+    /// Supports null / ~ to explicitly suppress or remove variables (e.g. ipv4: null).
     /// Environment variables like ${DYNU_PASSWORD} are automatically expanded.
     #[serde(default)]
-    pub args: HashMap<String, String>,
+    pub args: HashMap<String, Option<String>>,
 
     /// HTTP request configuration. If omitted, filled from provider's default template.
     #[serde(default)]

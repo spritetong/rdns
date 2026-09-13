@@ -178,6 +178,16 @@ When `rdns` executes an update, placeholders in URLs, headers, and request bodie
 | `{{timestamp}}` | Current Unix epoch timestamp (seconds) | `1741780000` |
 | `{{args.KEY}}` or `{{KEY}}` | Custom parameters defined under `args` | `{{token}}`, `{{zone_id}}` |
 | `${ENV_VAR}` | Environment variable (interpolated on config load) | `${CF_API_TOKEN}` |
+| `{{?var:THEN}}` | **Conditional Pattern**: renders `THEN` (with `{}` replaced by `var`) if `var` is active, else omitted | `{{?ipv4:&ip={}}}` $\to$ `&ip=1.2.3.4` or `""` |
+| `{{?var:THEN\|ELSE}}` | **Conditional with Else**: renders `THEN` if `var` is active, else renders `ELSE` | `{{?ipv4:&myip={}\|&myip=no}}` $\to$ `&myip=1.2.3.4` or `&myip=no` |
+
+> [!TIP]
+> **Single-Stack & Protocol Overrides via `args`**:
+> If an interface is dual-stack, but a specific task should only update IPv6 or IPv4:
+> - Set `ipv4: null` (or `ipv4: ~`) in the task's `args:` to suppress IPv4 and make it an IPv6-only task.
+> - Set `ipv6: null` (or `ipv6: ~`) in `args:` to suppress IPv6 and make it an IPv4-only task.
+> - Specify a static IP string (e.g. `ipv4: "1.2.3.4"`) in `args:` to override interface resolution for that task.
+> - If an interface only defines `ipv4:` or `ipv6:`, tasks bound to it automatically run in IPv4-only or IPv6-only mode, and conditional patterns (`{{?ipv4:...}}` / `{{?ipv6:...}}`) adapt accordingly without any manual configuration.
 
 ---
 
@@ -215,16 +225,17 @@ tasks:
       cacerts: "/etc/ssl/certs/internal-ca.pem"  # Task-specific custom CA certificates
 ```
 
-#### Simple GET Query Parameter Hook
+#### Adaptive Query Parameter Webhook (Conditional Dual / Single Stack)
 
 ```yaml
 tasks:
-  - name: "custom-get-ddns"
+  - name: "custom-adaptive-ddns"
     interface: "Local"
     domain: "myserver.dynamic-dns.org"
     request:
       method: "GET"
-      url: "https://ddns.example.org/nic/update?hostname={{domain}}&myip={{ipv4}}&key=${DDNS_KEY}"
+      # Automatically includes &ip= or &ipv6= only when that protocol is active on the interface/task
+      url: "https://ddns.example.org/nic/update?hostname={{domain}}&key=${DDNS_KEY}{{?ipv4:&ip={}}}{{?ipv6:&ipv6={}}}"
       success_contains:
         - "good"
         - "nochg"
@@ -234,24 +245,17 @@ tasks:
 
 ### 3. Built-in Provider Presets
 
-`rdns` ships with predefined templates for 14 common DDNS configurations. When using a `provider`, standard URLs, HTTP methods, headers, request bodies, and success assertions are pre-configured, requiring only credentials and IDs in `args`.
+`rdns` ships with predefined templates for common DDNS configurations. All major providers (`cloudflare`, `dynu`, `dynv6`, `duckdns`, and `he`) are **adaptive**: they automatically support dual-stack, IPv4-only, or IPv6-only environments through conditional template replacement and JSON comma cleaning.
 
 | Provider Name | Stack | Description | Required `args` |
 | :--- | :--- | :--- | :--- |
-| `cloudflare` | Dual-Stack | Cloudflare DNS API v4 (batch A & AAAA update) | `token`, `zone_id`, `record_id_v4`, `record_id_v6` |
-| `cloudflare-v4` | IPv4 | Cloudflare DNS API v4 (A record PATCH) | `token`, `zone_id`, `record_id` |
-| `cloudflare-v6` | IPv6 | Cloudflare DNS API v4 (AAAA record PATCH) | `token`, `zone_id`, `record_id` |
-| `dynu` | Dual-Stack | Dynu Systems DDNS API | `password` (optional: `username`) |
-| `dynu-ipv4` | IPv4 | Dynu Systems DDNS API | `password` (optional: `username`) |
-| `dynu-ipv6` | IPv6 | Dynu Systems DDNS API | `password` (optional: `username`) |
-| `dynv6` | Dual-Stack | dynv6 Free Dynamic DNS API | `token` |
-| `dynv6-ipv4` | IPv4 | dynv6 Free Dynamic DNS API | `token` |
-| `dynv6-ipv6` | IPv6 | dynv6 Free Dynamic DNS API | `token` |
-| `duckdns` | Dual-Stack | DuckDNS API | `token` |
-| `duckdns-ipv4` | IPv4 | DuckDNS API | `token` |
-| `duckdns-ipv6` | IPv6 | DuckDNS API | `token` |
-| `he` | IPv4 | Hurricane Electric Dynamic DNS | `password` |
+| `cloudflare` | Adaptive (Dual/v4/v6) | Cloudflare DNS API v4 (adaptive batch update) | `token`, `zone_id` (`record_id_v4` if v4 active, `record_id_v6` if v6 active) |
+| `dynu` | Adaptive (Dual/v4/v6) | Dynu Systems DDNS API (auto adapts; fallback `&myipv6=no`) | `password` (optional: `username`) |
+| `dynv6` | Adaptive (Dual/v4/v6) | dynv6 Free Dynamic DNS API (auto adapts) | `token` |
+| `duckdns` | Adaptive (Dual/v4/v6) | DuckDNS API (auto adapts) | `token` |
+| `he` | Adaptive (Dual/v4/v6) | Hurricane Electric Dynamic DNS (auto adapts) | `password` |
 | `noip` | IPv4 | No-IP Dynamic Update Client API | `username`, `password` |
+
 
 #### Cloudflare
 
@@ -264,10 +268,14 @@ tasks:
 >
 > *(Interactive prompt for your API token if omitted or not exported in `CF_API_TOKEN`)*
 
-Dual-stack atomic update (single batch API call updating both A and AAAA records):
+The `cloudflare` provider uses the atomic batch update API (`/dns_records/batch`). Thanks to conditional template rendering and JSON normalizer, a single `cloudflare` provider configuration automatically handles:
+- **Dual-Stack**: Updates both A and AAAA records in a single atomic request.
+- **IPv4-Only**: Updates only the A record (e.g. when the interface only has IPv4 or `ipv6: null` is set).
+- **IPv6-Only**: Updates only the AAAA record (e.g. when the interface only has IPv6 or `ipv4: null` is set).
 
 ```yaml
 tasks:
+  # Dual-stack atomic batch update
   - name: "cf-dualstack"
     interface: "Local"
     domain: "sub.example.com"
@@ -277,117 +285,77 @@ tasks:
       zone_id: "${CF_ZONE_ID}"
       record_id_v4: "${CF_RECORD_ID_V4}"
       record_id_v6: "${CF_RECORD_ID_V6}"
-```
 
-Single-stack IPv4 or IPv6 updates:
-
-```yaml
-tasks:
-  - name: "cf-v4"
+  # IPv4-only update on a dual-stack interface
+  - name: "cf-v4-only"
     interface: "Local"
     domain: "ipv4.example.com"
-    provider: "cloudflare-v4" # Aliases: "cf-v4", "cloudflare-ipv4"
+    provider: "cloudflare"
     args:
       token: "${CF_API_TOKEN}"
       zone_id: "${CF_ZONE_ID}"
-      record_id: "${CF_RECORD_ID_V4}"
+      record_id_v4: "${CF_RECORD_ID_V4}"
+      ipv6: null # Suppresses IPv6 for this task
 
-  - name: "cf-v6"
+  # IPv6-only update on a dual-stack interface
+  - name: "cf-v6-only"
     interface: "Local"
     domain: "ipv6.example.com"
-    provider: "cloudflare-v6" # Aliases: "cf-v6", "cloudflare-ipv6"
+    provider: "cloudflare"
     args:
       token: "${CF_API_TOKEN}"
       zone_id: "${CF_ZONE_ID}"
-      record_id: "${CF_RECORD_ID_V6}"
+      record_id_v6: "${CF_RECORD_ID_V6}"
+      ipv4: null # Suppresses IPv4 for this task
 ```
 
 #### Dynu Systems
 
+Automatically adapts to dual-stack, IPv4-only, or IPv6-only:
+
 ```yaml
 tasks:
-  # Dual-Stack (IPv4 & IPv6)
-  - name: "dynu-dual"
+  - name: "dynu-adaptive"
     interface: "Local"
     domain: "yourname.freeddns.org"
     provider: "dynu"
     args:
       password: "${DYNU_PASSWORD}"
       # username: "optional_username"
-
-  # IPv4 Only
-  - name: "dynu-v4"
-    interface: "Local"
-    domain: "yourname.freeddns.org"
-    provider: "dynu-ipv4"
-    args:
-      password: "${DYNU_PASSWORD}"
-
-  # IPv6 Only
-  - name: "dynu-v6"
-    interface: "Local"
-    domain: "yourname.freeddns.org"
-    provider: "dynu-ipv6"
-    args:
-      password: "${DYNU_PASSWORD}"
+      # ipv4: null # Optional: suppress IPv4 for IPv6-only
+      # ipv6: null # Optional: suppress IPv6 for IPv4-only
 ```
 
 #### dynv6
 
+Automatically adapts to dual-stack, IPv4-only, or IPv6-only:
+
 ```yaml
 tasks:
-  # Dual-Stack (IPv4 & IPv6)
-  - name: "dynv6-dual"
+  - name: "dynv6-adaptive"
     interface: "Local"
     domain: "yourname.dynv6.net"
     provider: "dynv6"
     args:
       token: "${DYNV6_TOKEN}"
-
-  # IPv4 Only
-  - name: "dynv6-v4"
-    interface: "Local"
-    domain: "yourname.dynv6.net"
-    provider: "dynv6-ipv4"
-    args:
-      token: "${DYNV6_TOKEN}"
-
-  # IPv6 Only
-  - name: "dynv6-v6"
-    interface: "Local"
-    domain: "yourname.dynv6.net"
-    provider: "dynv6-ipv6"
-    args:
-      token: "${DYNV6_TOKEN}"
+      # ipv4: null # Optional: suppress IPv4 for IPv6-only
+      # ipv6: null # Optional: suppress IPv6 for IPv4-only
 ```
 
 #### DuckDNS
 
+Automatically adapts to dual-stack, IPv4-only, or IPv6-only:
+
 ```yaml
 tasks:
-  # Dual-Stack (IPv4 & IPv6)
-  - name: "duckdns-dual"
+  - name: "duckdns-adaptive"
     interface: "Local"
     domain: "yoursubdomain" # Subdomain prefix without .duckdns.org
     provider: "duckdns"
     args:
       token: "${DUCKDNS_TOKEN}"
-
-  # IPv4 Only
-  - name: "duckdns-v4"
-    interface: "Local"
-    domain: "yoursubdomain"
-    provider: "duckdns-ipv4"
-    args:
-      token: "${DUCKDNS_TOKEN}"
-
-  # IPv6 Only
-  - name: "duckdns-v6"
-    interface: "Local"
-    domain: "yoursubdomain"
-    provider: "duckdns-ipv6"
-    args:
-      token: "${DUCKDNS_TOKEN}"
+      # ipv4: null # Optional: suppress IPv4 for IPv6-only
+      # ipv6: null # Optional: suppress IPv6 for IPv4-only
 ```
 
 #### Hurricane Electric (HE)

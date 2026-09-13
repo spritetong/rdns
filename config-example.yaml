@@ -56,17 +56,18 @@ interfaces:
       prefer_slaac: true # Prioritize identifying and selecting stable SLAAC (EUI-64) IPv6 addresses
 
 tasks:
-  # Task 1: Dynu dual-stack atomic update (using predefined provider: dynu and named args)
-  - name: "dynu-office-dualstack"
+  # Task 1: Dynu adaptive update (auto adapts to dual-stack, IPv4-only, or IPv6-only via conditional patterns)
+  - name: "dynu-office-adaptive"
     # interface: "Local"       # Optional; defaults to the first interface if omitted
     domain: "wox-office.freeddns.org" # Checks remote DNS resolution every cycle; triggers corrective update on mismatch
     force_update_interval: 86400 # Heartbeat keepalive interval for this task (seconds)
-    provider: "dynu" # Built-in provider template; query details with `rdns --provider dynu`
+    provider: "dynu" # Built-in adaptive provider template; query details with `rdns --provider dynu`
     args:
-      password: "${DYNU_PASSWORD:-YOUR_UPDATE_PASSWORD}" # Supports environment variable expansion, injected as {{password}}
+      password: "${DYNU_PASSWORD:-YOUR_UPDATE_PASSWORD}" # Injected as {{password}}
+      # ipv4: null             # Optional: set to null or ~ to disable IPv4 and force IPv6-only for this task
 
-  # Task 2: Standalone IPv6 update example (using custom request and named args)
-  - name: "custom-v6-webhook"
+  # Task 2: Standalone webhook with conditional URL replacement ({{?var:THEN|ELSE}})
+  - name: "custom-adaptive-webhook"
     interface: "Local"
     domain: "home.example.com"
     force_update_interval: 43200

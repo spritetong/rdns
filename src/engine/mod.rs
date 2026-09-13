@@ -6,7 +6,7 @@
 
 mod client;
 mod executor;
-mod template;
+pub mod template;
 mod verifier;
 
 pub use client::build_http_client;

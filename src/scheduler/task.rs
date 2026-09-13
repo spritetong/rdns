@@ -56,6 +56,34 @@ struct HeartbeatState {
     failure_count: u32,
 }
 
+/// Helper to resolve effective IP for a task considering interface resolution and task-level args overrides/suppressions.
+///
+/// If args contains `ipv4: null` or `ipv4: ~` or `ipv4: ""` or `"none"` or `"false"`, the IP is suppressed (`None`).
+/// If args contains a non-empty custom IP string, that value overrides the interface IP.
+/// Otherwise, falls back to the interface resolved IP.
+fn resolve_task_ip<T: std::fmt::Display>(
+    iface_ip: Option<T>,
+    arg_override: Option<&Option<String>>,
+) -> Option<String> {
+    match arg_override {
+        Some(None) => None, // Explicitly suppressed (yaml: null or ~)
+        Some(Some(val)) => {
+            let trimmed = val.trim();
+            if trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("none")
+                || trimmed.eq_ignore_ascii_case("false")
+                || trimmed.eq_ignore_ascii_case("null")
+                || trimmed == "~"
+            {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        None => iface_ip.map(|ip| ip.to_string()),
+    }
+}
+
 pub struct TaskExecutor {
     config: TaskConfig,
     ctx: TaskContext,
@@ -82,8 +110,20 @@ impl TaskExecutor {
         v6_opt: Option<Ipv6Addr>,
     ) -> TaskRunOutcome {
         let task_name = &self.config.name;
-        let v4_str = v4_opt.map(|ip| ip.to_string());
-        let v6_str = v6_opt.map(|ip| ip.to_string());
+        let v4_str = resolve_task_ip(v4_opt, self.config.args.get("ipv4"));
+        let v6_str = resolve_task_ip(v6_opt, self.config.args.get("ipv6"));
+
+        // If neither IPv4 nor IPv6 is enabled or available for this task, skip execution
+        if v4_str.is_none() && v6_str.is_none() {
+            tracing::debug!(
+                "[{}] Neither IPv4 nor IPv6 is enabled or available for this task, skipping update",
+                task_name
+            );
+            return TaskRunOutcome::default();
+        }
+
+        let eff_v4_ip: Option<Ipv4Addr> = v4_str.as_deref().and_then(|s| s.parse().ok());
+        let eff_v6_ip: Option<Ipv6Addr> = v6_str.as_deref().and_then(|s| s.parse().ok());
 
         // 1. Diff against cached state
         let cached = self.ctx.state_store.get(task_name).unwrap_or_default();
@@ -142,8 +182,8 @@ impl TaskExecutor {
                     .await
                 {
                     Ok((dns_v4, dns_v6)) => {
-                        let v4_mismatch = v4_opt.is_some() && dns_v4 != v4_opt;
-                        let v6_mismatch = v6_opt.is_some() && dns_v6 != v6_opt;
+                        let v4_mismatch = eff_v4_ip.is_some() && dns_v4 != eff_v4_ip;
+                        let v6_mismatch = eff_v6_ip.is_some() && dns_v6 != eff_v6_ip;
                         if v4_mismatch || v6_mismatch {
                             need_update = true;
                             known_dns_mismatch = true;
@@ -737,7 +777,7 @@ mod tests {
         };
 
         let mut args = HashMap::new();
-        args.insert("password".to_string(), "my_test_password".to_string());
+        args.insert("password".to_string(), Some("my_test_password".to_string()));
 
         let dynu_provider = crate::provider::get_provider("dynu").unwrap();
         let task_cfg = TaskConfig {
@@ -945,4 +985,85 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
+
+    #[tokio::test]
+    async fn test_task_args_null_ipv4_suppression() {
+        let tmp_dir = std::env::temp_dir().join(format!("rdns_test_suppress_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let state_path = tmp_dir.join("state.json");
+        let state_store = StateStore::new(&state_path);
+
+        let global = crate::config::GlobalConfig::default();
+        let engine = HttpEngine::new(&global).unwrap();
+        let notifier = NotificationDispatcher::new(None, engine.clone());
+        let dns_resolver = DnsResolver::new();
+
+        let ctx = TaskContext {
+            engine,
+            state_store: state_store.clone(),
+            notifier,
+            dns_resolver,
+            dns_server: None,
+            timeout: Duration::from_millis(500),
+            normal_interval_secs: 60,
+            dry_run: true,
+        };
+
+        let mut args = HashMap::new();
+        args.insert("ipv4".to_string(), None); // Explicit null / ~ suppression
+
+        let task_cfg = TaskConfig {
+            name: "test-suppress-v4".to_string(),
+            interface: None,
+            force_update_interval: None,
+            domain: Some("test.example.com".to_string()),
+            provider: None,
+            args,
+            request: Some(RequestConfig {
+                url: Some("http://127.0.0.1:8888/update?v6={{ipv6}}".to_string()),
+                ..Default::default()
+            }),
+        };
+
+        let executor = TaskExecutor::new(task_cfg, ctx);
+        // Feed both IPv4 and IPv6 from interface
+        let outcome = executor
+            .execute_with_ip(
+                Some("1.2.3.4".parse().unwrap()),
+                Some("2001:db8::1".parse().unwrap()),
+            )
+            .await;
+
+        assert!(outcome.error.is_none());
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_resolve_task_ip_variations() {
+        // Interface provides 1.2.3.4
+        let iface_ip: Option<Ipv4Addr> = Some("1.2.3.4".parse().unwrap());
+
+        // 1. None in args -> falls back to interface IP
+        assert_eq!(resolve_task_ip(iface_ip, None), Some("1.2.3.4".to_string()));
+
+        // 2. Some(None) in args (yaml: ipv4: null or ipv4: ~) -> suppressed
+        assert_eq!(resolve_task_ip(iface_ip, Some(&None)), None);
+
+        // 3. Some(Some("")) in args -> suppressed
+        assert_eq!(resolve_task_ip(iface_ip, Some(&Some("".to_string()))), None);
+
+        // 4. Some(Some("none")) / "false" in args -> suppressed
+        assert_eq!(resolve_task_ip(iface_ip, Some(&Some("none".to_string()))), None);
+        assert_eq!(resolve_task_ip(iface_ip, Some(&Some("false".to_string()))), None);
+        assert_eq!(resolve_task_ip(iface_ip, Some(&Some("null".to_string()))), None);
+        assert_eq!(resolve_task_ip(iface_ip, Some(&Some("~".to_string()))), None);
+
+        // 5. Some(Some("5.6.7.8")) in args -> static override
+        assert_eq!(
+            resolve_task_ip(iface_ip, Some(&Some("5.6.7.8".to_string()))),
+            Some("5.6.7.8".to_string())
+        );
+    }
 }
+
