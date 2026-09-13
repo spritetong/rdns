@@ -63,7 +63,8 @@ fn main() -> ExitCode {
 
                     let mut all_matched = true;
                     for iface in &cfg.interfaces {
-                        if let Some(ref v4) = iface.ipv4
+                        let eff_v4 = iface.effective_ipv4_strategy();
+                        if let Some(ref v4) = eff_v4
                             && v4.enabled
                             && v4.source == "interface"
                         {
@@ -81,7 +82,8 @@ fn main() -> ExitCode {
                                 }
                             }
                         }
-                        if let Some(ref v6) = iface.ipv6
+                        let eff_v6 = iface.effective_ipv6_strategy();
+                        if let Some(ref v6) = eff_v6
                             && v6.enabled
                             && v6.source == "interface"
                         {

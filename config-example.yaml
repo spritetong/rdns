@@ -41,19 +41,23 @@ interfaces:
     interval: 300
     retry_interval: 60 # Optional override: fast retry interval when update fails and DNS records mismatch
     dns_server: "8.8.8.8" # Optional DNS server used to check actual remote DNS records (auto-recovers if cloud record is drifted)
-    ipv4:
-      enabled: true
+
+    # Unified dual-stack query profile (simultaneously detects both IPv4 and IPv6)
+    # Source can be "remote" or "interface"
+    ip:
       source: "remote"
       urls:
-        - "https://ipv4.icanhazip.com"
-        - "https://v4.ident.me"
-        - "https://api.ipify.org"
+        - "https://api64.ipify.org"
+        - "https://icanhazip.com"
+        - "https://ident.me"
 
-    ipv6:
-      enabled: true
-      source: "interface"
-      interface: "Local" # Network interface name (friendly name on Windows, eth0 on Linux, etc.)
-      prefer_slaac: true # Prioritize identifying and selecting stable SLAAC (EUI-64) IPv6 addresses
+    # Optional overrides: ipv4 / ipv6 have higher priority and override ip settings
+    # ipv4:
+    #   enabled: false       # Disable IPv4 for this interface (IPv6-only)
+    # ipv6:
+    #   source: "interface"  # Override IPv6 to extract directly from local network adapter
+    #   interface: "Local"   # Windows friendly name (e.g. "以太网") or Linux interface (e.g. "eth0")
+    #   prefer_slaac: true   # Prioritize stable SLAAC (EUI-64) IPv6 addresses
 
 tasks:
   # Task 1: Dynu adaptive update (auto adapts to dual-stack, IPv4-only, or IPv6-only via conditional patterns)

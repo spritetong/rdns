@@ -14,17 +14,17 @@ A lightweight, robust, event-driven Dynamic DNS (DDNS) daemon written in Rust.
   - Built-in debounce coalescing and virtual adapter filtering (`vEthernet`, WSL, Docker, TAP/TUN) with whitelist support for user-configured adapters.
   - Modern Standby / Sleep-wake protection with DNS readiness probes.
 
-- 🌐 **Decoupled Interface Pools**:
-  - Network egress profiles (`interfaces`) are abstracted from update tasks.
+- 🌐 **Decoupled Interface Pools & Unified Dual-Stack**:
+  - Network egress profiles (`interfaces`) support unified dual-stack `ip:` resolution (concurrently detecting IPv4 and IPv6) with auto-adapting remote parsers and higher-priority `ipv4:` / `ipv6:` overrides.
   - An interface performs periodic IP detection once, and all bound tasks reuse the resolved result ("probe once, fan out to many").
 
 - 🔄 **Native Dual-Stack & Single-Request Atomic Updates**:
   - Concurrently queries and validates both IPv4 and IPv6 addresses.
   - Injects both IPs into a single HTTP request (e.g., Cloudflare batch API or custom webhooks).
 
-- 🧩 **Zero Hardcoded Provider SDKs**:
+- 🧩 **Zero Hardcoded Provider SDKs & Adaptive Template Engine**:
   - Fully driven by declarative HTTP request templates (URL, Headers, Body, Method).
-  - Supports GET, POST, PUT, PATCH with Mustache-style variable templating (`{{ipv4}}`, `{{ipv6}}`, `{{domain}}`, `{{args.param}}`).
+  - Supports variable substitution (`{{ipv4}}`, `{{ipv6}}`, `{{domain}}`, `{{args.param}}`) alongside **Conditional Replacement Patterns** (`{{?var:THEN|ELSE}}`) and quote-aware JSON comma cleaning.
   - Declarative response assertions via HTTP status codes and regex patterns (e.g. `good|nochg`).
 
 - 📦 **Built-in Provider Presets**:
@@ -134,17 +134,18 @@ interfaces:
   - name: "Local"
     interval: 300
     dns_server: "8.8.8.8"
-    ipv4:
-      enabled: true
-      source: "remote"
+    # Unified dual-stack IP resolution (simultaneously detects IPv4 and IPv6)
+    ip:
+      source: "remote"          # "remote" or "interface"
       urls:
-        - "https://api.ipify.org"
-        - "https://v4.ident.me"
-    ipv6:
-      enabled: true
-      source: "interface"
-      interface: "eth0"         # Or Windows friendly name like "以太网"
-      prefer_slaac: true        # Prioritize RFC 4291 EUI-64 SLAAC address
+        - "https://api64.ipify.org"
+        - "https://icanhazip.com"
+        - "https://ident.me"
+    # Optional overrides: ipv4 / ipv6 have higher priority and override ip settings
+    # ipv6:
+    #   source: "interface"
+    #   interface: "eth0"         # Or Windows friendly name like "以太网"
+    #   prefer_slaac: true        # Prioritize RFC 4291 EUI-64 SLAAC address
 
 # DDNS Tasks
 tasks:
@@ -182,11 +183,14 @@ When `rdns` executes an update, placeholders in URLs, headers, and request bodie
 | `{{?var:THEN\|ELSE}}` | **Conditional with Else**: renders `THEN` if `var` is active, else renders `ELSE` | `{{?ipv4:&myip={}\|&myip=no}}` $\to$ `&myip=1.2.3.4` or `&myip=no` |
 
 > [!TIP]
-> **Single-Stack & Protocol Overrides via `args`**:
-> If an interface is dual-stack, but a specific task should only update IPv6 or IPv4:
-> - Set `ipv4: null` (or `ipv4: ~`) in the task's `args:` to suppress IPv4 and make it an IPv6-only task.
-> - Set `ipv6: null` (or `ipv6: ~`) in `args:` to suppress IPv6 and make it an IPv4-only task.
-> - Specify a static IP string (e.g. `ipv4: "1.2.3.4"`) in `args:` to override interface resolution for that task.
+> **Interface Configuration & Protocol Overrides**:
+>
+> - **Unified `ip:` option**: Automatically detects both IPv4 and IPv6 using the same source (`remote` or `interface`). Remote probes auto-adapt to plain text, JSON (`{"ip": ...}`), or quoted responses.
+> - **Higher-Priority `ipv4:` / `ipv6:` overrides**: Define dedicated `ipv4:` or `ipv6:` to override `ip:` settings (or set `enabled: false` to disable a protocol entirely for this interface).
+> - **Task-level protocol suppression via `args`**:
+>   - Set `ipv4: null` (or `ipv4: ~`) in the task's `args:` to suppress IPv4 and make it an IPv6-only task.
+>   - Set `ipv6: null` (or `ipv6: ~`) in `args:` to suppress IPv6 and make it an IPv4-only task.
+>   - Specify a static IP string (e.g. `ipv4: "1.2.3.4"`) in `args:` to override interface resolution for that task.
 > - If an interface only defines `ipv4:` or `ipv6:`, tasks bound to it automatically run in IPv4-only or IPv6-only mode, and conditional patterns (`{{?ipv4:...}}` / `{{?ipv6:...}}`) adapt accordingly without any manual configuration.
 
 ---
@@ -256,7 +260,6 @@ tasks:
 | `he` | Adaptive (Dual/v4/v6) | Hurricane Electric Dynamic DNS (auto adapts) | `password` |
 | `noip` | IPv4 | No-IP Dynamic Update Client API | `username`, `password` |
 
-
 #### Cloudflare
 
 > [!TIP]
@@ -269,6 +272,7 @@ tasks:
 > *(Interactive prompt for your API token if omitted or not exported in `CF_API_TOKEN`)*
 
 The `cloudflare` provider uses the atomic batch update API (`/dns_records/batch`). Thanks to conditional template rendering and JSON normalizer, a single `cloudflare` provider configuration automatically handles:
+
 - **Dual-Stack**: Updates both A and AAAA records in a single atomic request.
 - **IPv4-Only**: Updates only the A record (e.g. when the interface only has IPv4 or `ipv6: null` is set).
 - **IPv6-Only**: Updates only the AAAA record (e.g. when the interface only has IPv6 or `ipv4: null` is set).
@@ -360,14 +364,18 @@ tasks:
 
 #### Hurricane Electric (HE)
 
+Automatically adapts to dual-stack, IPv4-only, or IPv6-only:
+
 ```yaml
 tasks:
-  - name: "he-v4"
+  - name: "he-adaptive"
     interface: "Local"
     domain: "yourname.dyn.he.net"
     provider: "he" # Alias: "hurricane-electric"
     args:
       password: "${HE_PASSWORD}"
+      # ipv4: null # Optional: suppress IPv4 for IPv6-only
+      # ipv6: null # Optional: suppress IPv6 for IPv4-only
 ```
 
 #### No-IP

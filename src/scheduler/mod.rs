@@ -60,6 +60,11 @@ impl SchedulerService {
             let mut configured_interfaces: Vec<String> = Vec::new();
             for i in &config.interfaces {
                 configured_interfaces.push(i.name.clone());
+                if let Some(ref ip) = i.ip
+                    && let Some(ref iface) = ip.interface
+                {
+                    configured_interfaces.push(iface.clone());
+                }
                 if let Some(ref ipv4) = i.ipv4
                     && let Some(ref iface) = ipv4.interface
                 {

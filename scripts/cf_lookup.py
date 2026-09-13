@@ -40,7 +40,7 @@ def http_get(
     headers = {
         'Authorization': f'Bearer {token}',
         'Content-Type': 'application/json',
-        'User-Agent': 'rdns-cf-lookup/1.0',
+        'User-Agent': 'rdns-cf-lookup/1.1.0',
     }
 
     req = urllib.request.Request(url, headers=headers, method='GET')
@@ -205,6 +205,7 @@ def generate_rdns_yaml(
       token: "${{CF_API_TOKEN}}"
       zone_id: "{zone_id}"
       record_id_v4: "{v4_id}"
+      # ipv6: null              # If interface is dual-stack, uncomment to suppress IPv6 for this task
 """
             )
         elif v6_id:
@@ -218,6 +219,7 @@ def generate_rdns_yaml(
       token: "${{CF_API_TOKEN}}"
       zone_id: "{zone_id}"
       record_id_v6: "{v6_id}"
+      # ipv4: null              # If interface is dual-stack, uncomment to suppress IPv4 for this task
 """
             )
 

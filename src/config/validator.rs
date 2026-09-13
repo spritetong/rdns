@@ -4,7 +4,7 @@
 
 //! Validation rules for configuration entities.
 
-use crate::config::model::Config;
+use crate::config::model::{Config, IpStrategyConfig};
 use crate::error::ConfigError;
 use regex::Regex;
 use std::collections::HashSet;
@@ -126,111 +126,37 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
             validate_dns_server(dns, &format!("interfaces[{}].dns_server", iface.name))?;
         }
 
-        let v4_enabled = iface.ipv4.as_ref().map(|s| s.enabled).unwrap_or(false);
-        let v6_enabled = iface.ipv6.as_ref().map(|s| s.enabled).unwrap_or(false);
+        let eff_v4 = iface.effective_ipv4_strategy();
+        let eff_v6 = iface.effective_ipv6_strategy();
+
+        let v4_enabled = eff_v4.as_ref().map(|s| s.enabled).unwrap_or(false);
+        let v6_enabled = eff_v6.as_ref().map(|s| s.enabled).unwrap_or(false);
 
         if !v4_enabled && !v6_enabled {
             return Err(ConfigError::Validation {
                 field: format!("interfaces[{}].ip", iface.name),
-                message: "At least one of 'ipv4' or 'ipv6' must be enabled for interface"
+                message: "At least one of 'ip', 'ipv4', or 'ipv6' must be enabled for interface"
                     .to_string(),
             });
         }
 
-        // Validate IPv4 config
-        if let Some(ref v4) = iface.ipv4
-            && v4.enabled
-        {
-            match v4.source.as_str() {
-                "remote" => {
-                    if v4.urls.is_empty() {
-                        return Err(ConfigError::Validation {
-                            field: format!("interfaces[{}].ipv4.urls", iface.name),
-                            message: "Remote IPv4 source requires at least one URL".to_string(),
-                        });
-                    }
-                }
-                "interface" => {
-                    let iface_pattern = v4.interface.as_deref().unwrap_or("");
-                    if iface_pattern.is_empty() {
-                        return Err(ConfigError::Validation {
-                            field: format!("interfaces[{}].ipv4.interface", iface.name),
-                            message: "Interface IPv4 source requires an interface name or pattern"
-                                .to_string(),
-                        });
-                    }
-                    if let Err(e) = Regex::new(iface_pattern) {
-                        return Err(ConfigError::Validation {
-                            field: format!("interfaces[{}].ipv4.interface", iface.name),
-                            message: format!(
-                                "Invalid interface regex pattern '{}': {}",
-                                iface_pattern, e
-                            ),
-                        });
-                    }
-                }
-                other => {
-                    return Err(ConfigError::Validation {
-                        field: format!("interfaces[{}].ipv4.source", iface.name),
-                        message: format!(
-                            "Unsupported IP source '{}', must be 'remote' or 'interface'",
-                            other
-                        ),
-                    });
-                }
-            }
+        // Validate unified IP config if present
+        if let Some(ref ip) = iface.ip {
+            validate_strategy_config(ip, &format!("interfaces[{}].ip", iface.name), "IP")?;
         }
 
-        // Validate IPv6 config
-        if let Some(ref v6) = iface.ipv6
-            && v6.enabled
+        // Validate IPv4 config if specified
+        if iface.ipv4.is_some()
+            && let Some(ref v4) = eff_v4
         {
-            match v6.source.as_str() {
-                "remote" => {
-                    if v6.urls.is_empty() {
-                        return Err(ConfigError::Validation {
-                            field: format!("interfaces[{}].ipv6.urls", iface.name),
-                            message: "Remote IPv6 source requires at least one URL".to_string(),
-                        });
-                    }
-                }
-                "interface" => {
-                    let iface_pattern = v6.interface.as_deref().unwrap_or("");
-                    if iface_pattern.is_empty() {
-                        return Err(ConfigError::Validation {
-                            field: format!("interfaces[{}].ipv6.interface", iface.name),
-                            message: "Interface IPv6 source requires an interface name or pattern"
-                                .to_string(),
-                        });
-                    }
-                    if let Err(e) = Regex::new(iface_pattern) {
-                        return Err(ConfigError::Validation {
-                            field: format!("interfaces[{}].ipv6.interface", iface.name),
-                            message: format!(
-                                "Invalid interface regex pattern '{}': {}",
-                                iface_pattern, e
-                            ),
-                        });
-                    }
-                    if let Some(ref r) = v6.ipv6_regex
-                        && let Err(e) = Regex::new(r)
-                    {
-                        return Err(ConfigError::Validation {
-                            field: format!("interfaces[{}].ipv6.ipv6_regex", iface.name),
-                            message: format!("Invalid ipv6_regex pattern '{}': {}", r, e),
-                        });
-                    }
-                }
-                other => {
-                    return Err(ConfigError::Validation {
-                        field: format!("interfaces[{}].ipv6.source", iface.name),
-                        message: format!(
-                            "Unsupported IP source '{}', must be 'remote' or 'interface'",
-                            other
-                        ),
-                    });
-                }
-            }
+            validate_strategy_config(v4, &format!("interfaces[{}].ipv4", iface.name), "IPv4")?;
+        }
+
+        // Validate IPv6 config if specified
+        if iface.ipv6.is_some()
+            && let Some(ref v6) = eff_v6
+        {
+            validate_strategy_config(v6, &format!("interfaces[{}].ipv6", iface.name), "IPv6")?;
         }
     }
 
@@ -318,11 +244,11 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
                     .unwrap_or(config.interfaces.first().map(|i| i.name.as_str()).unwrap_or(""));
                 let target_iface = config.interfaces.iter().find(|i| i.name == iface_name);
                 let iface_v4_enabled = target_iface
-                    .and_then(|i| i.ipv4.as_ref())
+                    .and_then(|i| i.effective_ipv4_strategy())
                     .map(|s| s.enabled)
                     .unwrap_or(false);
                 let iface_v6_enabled = target_iface
-                    .and_then(|i| i.ipv6.as_ref())
+                    .and_then(|i| i.effective_ipv6_strategy())
                     .map(|s| s.enabled)
                     .unwrap_or(false);
 
@@ -467,6 +393,67 @@ fn validate_dns_server(val: &str, field: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_strategy_config(
+    strat: &IpStrategyConfig,
+    field_prefix: &str,
+    family_label: &str,
+) -> Result<(), ConfigError> {
+    if !strat.enabled {
+        return Ok(());
+    }
+
+    match strat.source.as_str() {
+        "remote" => {
+            if strat.urls.is_empty() {
+                return Err(ConfigError::Validation {
+                    field: format!("{}.urls", field_prefix),
+                    message: format!("Remote {} source requires at least one URL", family_label),
+                });
+            }
+        }
+        "interface" => {
+            let iface_pattern = strat.interface.as_deref().unwrap_or("");
+            if iface_pattern.is_empty() {
+                return Err(ConfigError::Validation {
+                    field: format!("{}.interface", field_prefix),
+                    message: format!(
+                        "Interface {} source requires an interface name or pattern",
+                        family_label
+                    ),
+                });
+            }
+            if let Err(e) = Regex::new(iface_pattern) {
+                return Err(ConfigError::Validation {
+                    field: format!("{}.interface", field_prefix),
+                    message: format!(
+                        "Invalid interface regex pattern '{}': {}",
+                        iface_pattern, e
+                    ),
+                });
+            }
+            if let Some(ref r) = strat.ipv6_regex
+                && let Err(e) = Regex::new(r)
+            {
+                return Err(ConfigError::Validation {
+                    field: format!("{}.ipv6_regex", field_prefix),
+                    message: format!("Invalid ipv6_regex pattern '{}': {}", r, e),
+                });
+            }
+        }
+        other => {
+            return Err(ConfigError::Validation {
+                field: format!("{}.source", field_prefix),
+                message: format!(
+                    "Unsupported IP source '{}', must be 'remote' or 'interface'",
+                    other
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +478,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -534,6 +522,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -579,6 +568,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -633,6 +623,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -678,6 +669,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -715,6 +707,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -758,6 +751,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -798,6 +792,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -841,6 +836,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -881,6 +877,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -921,6 +918,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "interface".to_string(),
@@ -961,6 +959,7 @@ mod tests {
                 interval: None,
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: None,
                 ipv6: None,
             }],
@@ -992,6 +991,7 @@ mod tests {
                 interval: None,
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: None,
                 ipv6: None,
             }],
@@ -1024,6 +1024,7 @@ mod tests {
                 interval: Some(300),
                 retry_interval: None,
                 dns_server: None,
+                ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
                     source: "remote".to_string(),
@@ -1111,5 +1112,180 @@ mod tests {
         let mut cfg6 = make_cf_config(args6);
         let err6 = validate_config(&mut cfg6).unwrap_err();
         assert!(err6.to_string().contains("disables both IPv4 and IPv6"));
+    }
+
+    #[test]
+    fn test_interface_ip_dualstack_remote() {
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "dual_remote".to_string(),
+                ip: Some(IpStrategyConfig {
+                    source: "remote".to_string(),
+                    urls: vec!["https://api.ipify.org".to_string()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(test_request("http://127.0.0.1")),
+            }],
+        };
+        assert!(validate_config(&mut config).is_ok());
+    }
+
+    #[test]
+    fn test_interface_ip_interface_source() {
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "dual_iface".to_string(),
+                ip: Some(IpStrategyConfig {
+                    source: "interface".to_string(),
+                    interface: Some("eth0".to_string()),
+                    ipv6_regex: Some(r".*6221$".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(test_request("http://127.0.0.1")),
+            }],
+        };
+        assert!(validate_config(&mut config).is_ok());
+    }
+
+    #[test]
+    fn test_interface_ip_override_ipv4_disable() {
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "v6_only".to_string(),
+                ip: Some(IpStrategyConfig {
+                    source: "remote".to_string(),
+                    urls: vec!["https://api64.ipify.org".to_string()],
+                    ..Default::default()
+                }),
+                ipv4: Some(IpStrategyConfig {
+                    enabled: false,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(test_request("http://127.0.0.1")),
+            }],
+        };
+        assert!(validate_config(&mut config).is_ok());
+        let iface = &config.interfaces[0];
+        assert_eq!(iface.effective_ipv4_strategy().unwrap().enabled, false);
+        assert_eq!(iface.effective_ipv6_strategy().unwrap().enabled, true);
+    }
+
+    #[test]
+    fn test_interface_ip_override_ipv4_source() {
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "mixed".to_string(),
+                ip: Some(IpStrategyConfig {
+                    source: "interface".to_string(),
+                    interface: Some("eth0".to_string()),
+                    ..Default::default()
+                }),
+                ipv4: Some(IpStrategyConfig {
+                    source: "remote".to_string(),
+                    urls: vec!["https://api.ipify.org".to_string()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(test_request("http://127.0.0.1")),
+            }],
+        };
+        assert!(validate_config(&mut config).is_ok());
+        let iface = &config.interfaces[0];
+        assert_eq!(iface.effective_ipv4_strategy().unwrap().source, "remote");
+        assert_eq!(iface.effective_ipv6_strategy().unwrap().source, "interface");
+    }
+
+    #[test]
+    fn test_interface_missing_all_ip_strategies() {
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "empty_iface".to_string(),
+                ..Default::default()
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(test_request("http://127.0.0.1")),
+            }],
+        };
+        let err = validate_config(&mut config).unwrap_err();
+        assert!(err.to_string().contains("At least one of 'ip', 'ipv4', or 'ipv6' must be enabled"));
+    }
+
+    #[test]
+    fn test_interface_ip_remote_empty_urls() {
+        let mut config = Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "bad_remote".to_string(),
+                ip: Some(IpStrategyConfig {
+                    source: "remote".to_string(),
+                    urls: vec![],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "t1".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: None,
+                provider: None,
+                args: Default::default(),
+                request: Some(test_request("http://127.0.0.1")),
+            }],
+        };
+        let err = validate_config(&mut config).unwrap_err();
+        assert!(err.to_string().contains("Remote IP source requires at least one URL"));
     }
 }

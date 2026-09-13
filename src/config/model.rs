@@ -24,7 +24,7 @@ pub struct Config {
 }
 
 /// Named network interface IP query profile.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InterfaceConfig {
     pub name: String,
 
@@ -36,9 +36,48 @@ pub struct InterfaceConfig {
     /// Optional DNS server for verifying cloud records (e.g. "8.8.8.8", "1.1.1.1:53")
     pub dns_server: Option<String>,
 
+    /// Unified dual-stack IP query profile (auto-detects both IPv4 and IPv6).
+    pub ip: Option<IpStrategyConfig>,
+
+    /// Dedicated IPv4 query profile. Has higher priority and overrides `ip` for IPv4.
     pub ipv4: Option<IpStrategyConfig>,
 
+    /// Dedicated IPv6 query profile. Has higher priority and overrides `ip` for IPv6.
     pub ipv6: Option<IpStrategyConfig>,
+}
+
+impl InterfaceConfig {
+    /// Compute the effective IPv4 strategy.
+    /// `ipv4` has higher priority and overrides `ip`. If `ipv4` is present, it inherits
+    /// unspecified fields from `ip` if `ip` is also configured.
+    pub fn effective_ipv4_strategy(&self) -> Option<IpStrategyConfig> {
+        match &self.ipv4 {
+            Some(v4) => {
+                let mut effective = v4.clone();
+                if let Some(ref base) = self.ip {
+                    effective.inherit_from(base);
+                }
+                Some(effective)
+            }
+            None => self.ip.clone(),
+        }
+    }
+
+    /// Compute the effective IPv6 strategy.
+    /// `ipv6` has higher priority and overrides `ip`. If `ipv6` is present, it inherits
+    /// unspecified fields from `ip` if `ip` is also configured.
+    pub fn effective_ipv6_strategy(&self) -> Option<IpStrategyConfig> {
+        match &self.ipv6 {
+            Some(v6) => {
+                let mut effective = v6.clone();
+                if let Some(ref base) = self.ip {
+                    effective.inherit_from(base);
+                }
+                Some(effective)
+            }
+            None => self.ip.clone(),
+        }
+    }
 }
 
 /// Global settings.
@@ -163,6 +202,7 @@ pub struct IpStrategyConfig {
     pub enabled: bool,
 
     /// "remote" or "interface"
+    #[serde(default)]
     pub source: String,
 
     /// URLs for remote resolver
@@ -185,6 +225,42 @@ pub struct IpStrategyConfig {
     /// Allow private/internal addresses (default false)
     #[serde(default)]
     pub allow_private: bool,
+}
+
+impl Default for IpStrategyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            source: String::new(),
+            urls: Vec::new(),
+            interface: None,
+            ipv6_prefix: None,
+            prefer_slaac: true,
+            ipv6_regex: None,
+            allow_private: false,
+        }
+    }
+}
+
+impl IpStrategyConfig {
+    /// Inherit unspecified fields from a base `ip` strategy configuration.
+    pub fn inherit_from(&mut self, base: &Self) {
+        if self.source.trim().is_empty() {
+            self.source = base.source.clone();
+        }
+        if self.urls.is_empty() {
+            self.urls = base.urls.clone();
+        }
+        if self.interface.is_none() {
+            self.interface = base.interface.clone();
+        }
+        if self.ipv6_prefix.is_none() {
+            self.ipv6_prefix = base.ipv6_prefix.clone();
+        }
+        if self.ipv6_regex.is_none() {
+            self.ipv6_regex = base.ipv6_regex.clone();
+        }
+    }
 }
 
 fn default_true() -> bool {

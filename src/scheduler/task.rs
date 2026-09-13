@@ -463,7 +463,11 @@ impl InterfaceScheduler {
     ) -> Self {
         let interval_secs = config.interval.unwrap_or(default_interval_secs);
         let retry_secs = config.retry_interval.unwrap_or(default_retry_interval_secs);
-        let resolver = InterfaceIpResolver::new(config.ipv4.clone(), config.ipv6.clone(), timeout);
+        let resolver = InterfaceIpResolver::new(
+            config.effective_ipv4_strategy(),
+            config.effective_ipv6_strategy(),
+            timeout,
+        );
 
         Self {
             config,
