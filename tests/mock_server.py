@@ -54,7 +54,12 @@ def mock_ipv6():
 
 @app.get('/nic/update')
 def mock_dynu_update(
-    hostname: str = '', myip: str = '', myipv6: str = '', password: str = ''
+    hostname: str = '',
+    myip: str = '',
+    myipv6: str = '',
+    password: str = '',
+    username: str = '',
+    group: str = '',
 ):
     return PlainTextResponse('good 203.0.113.195')
 

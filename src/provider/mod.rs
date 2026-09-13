@@ -58,11 +58,11 @@ pub static PROVIDERS: &[Provider] = &[
         aliases: &[],
         description: "Dynu Systems DDNS (Adaptive Dual-stack / IPv4 / IPv6)",
         website: "https://www.dynu.com",
-        requires_domain: true,
+        requires_domain: false,
         required_args: &["password"],
-        optional_args: &["username"],
+        optional_args: &["username", "group"],
         default_method: "GET",
-        default_url: "https://api.dynu.com/nic/update?hostname={{domain}}&password={{password}}{{?ipv4:&myip={}|&myip=no}}{{?ipv6:&myipv6={}|&myipv6=no}}",
+        default_url: "https://api.dynu.com/nic/update?password={{password}}{{?domain:&hostname={}}}{{?username:&username={}}}{{?group:&group={}}}{{?ipv4:&myip={}|&myip=no}}{{?ipv6:&myipv6={}|&myipv6=no}}",
         default_headers: &[],
         default_body: None,
         default_success_regex: Some("^(good|nochg)"),
@@ -71,7 +71,9 @@ pub static PROVIDERS: &[Provider] = &[
     provider: "dynu"
     domain: "yourname.freeddns.org"
     args:
-      password: "${DYNU_PASSWORD}""#,
+      password: "${DYNU_PASSWORD}"
+      # username: "your_username"  # Optional: account username
+      # group: "your_group"          # Optional: group name to update a collection of hostnames"#,
     },
     Provider {
         name: "dynv6",
@@ -332,13 +334,14 @@ mod tests {
     fn test_provider_lookup_and_defaults() {
         let dynu = get_provider("dynu").expect("dynu must exist");
         assert_eq!(dynu.name, "dynu");
-        assert!(dynu.requires_domain);
+        assert!(!dynu.requires_domain);
         assert_eq!(dynu.required_args, &["password"]);
+        assert_eq!(dynu.optional_args, &["username", "group"]);
 
         let req = dynu.default_request();
         assert_eq!(req.method(), "GET");
         assert!(req.url().contains("api.dynu.com"));
-        assert!(req.url().contains("{{domain}}"));
+        assert!(req.url().contains("hostname="));
         assert!(req.url().contains("{{password}}"));
         assert_eq!(req.success_regex.as_deref(), Some("^(good|nochg)"));
 

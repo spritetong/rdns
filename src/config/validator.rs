@@ -208,7 +208,47 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
                 }
             })?;
 
-            if p.requires_domain && task.domain.as_deref().unwrap_or("").trim().is_empty() {
+            if p.name == "dynu" {
+                let has_domain = task
+                    .domain
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                let has_user = task
+                    .args
+                    .get("username")
+                    .and_then(|v| v.as_ref())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                let has_group = task
+                    .args
+                    .get("group")
+                    .and_then(|v| v.as_ref())
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+
+                if !has_domain && !has_user {
+                    return Err(ConfigError::Validation {
+                        field: format!("tasks[{}].domain", task.name),
+                        message: format!(
+                            "Provider 'dynu' in task '{}' requires either 'domain' (hostname) or 'username' to be specified",
+                            task.name
+                        ),
+                    });
+                }
+
+                if has_group && !has_user {
+                    return Err(ConfigError::Validation {
+                        field: format!("tasks[{}].args.username", task.name),
+                        message: format!(
+                            "Provider 'dynu' requires parameter 'username' in task '{}' args when 'group' is used",
+                            task.name
+                        ),
+                    });
+                }
+            } else if p.requires_domain
+                && task.domain.as_deref().unwrap_or("").trim().is_empty()
+            {
                 return Err(ConfigError::Validation {
                     field: format!("tasks[{}].domain", task.name),
                     message: format!(
@@ -1287,5 +1327,67 @@ mod tests {
         };
         let err = validate_config(&mut config).unwrap_err();
         assert!(err.to_string().contains("Remote IP source requires at least one URL"));
+    }
+
+    #[test]
+    fn test_dynu_validation_domain_username_group() {
+        let base_config = |domain: Option<&str>, args: std::collections::HashMap<String, Option<String>>| Config {
+            global: GlobalConfig::default(),
+            interfaces: vec![InterfaceConfig {
+                name: "test".to_string(),
+                ip: Some(IpStrategyConfig {
+                    source: "remote".to_string(),
+                    urls: vec!["https://api.ipify.org".to_string()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            notification: None,
+            tasks: vec![TaskConfig {
+                name: "dynu_test".to_string(),
+                interface: None,
+                force_update_interval: None,
+                domain: domain.map(|s| s.to_string()),
+                provider: Some("dynu".to_string()),
+                args,
+                request: None,
+            }],
+        };
+
+        // 1. Valid: domain + password
+        let mut args1 = std::collections::HashMap::new();
+        args1.insert("password".to_string(), Some("p1".to_string()));
+        let mut cfg1 = base_config(Some("my.dynu.com"), args1);
+        assert!(validate_config(&mut cfg1).is_ok());
+
+        // 2. Valid: username + group + password (no domain)
+        let mut args2 = std::collections::HashMap::new();
+        args2.insert("password".to_string(), Some("p1".to_string()));
+        args2.insert("username".to_string(), Some("u1".to_string()));
+        args2.insert("group".to_string(), Some("g1".to_string()));
+        let mut cfg2 = base_config(None, args2);
+        assert!(validate_config(&mut cfg2).is_ok());
+
+        // 3. Valid: username + password (no domain, updates account unassigned)
+        let mut args3 = std::collections::HashMap::new();
+        args3.insert("password".to_string(), Some("p1".to_string()));
+        args3.insert("username".to_string(), Some("u1".to_string()));
+        let mut cfg3 = base_config(None, args3);
+        assert!(validate_config(&mut cfg3).is_ok());
+
+        // 4. Invalid: neither domain nor username
+        let mut args4 = std::collections::HashMap::new();
+        args4.insert("password".to_string(), Some("p1".to_string()));
+        let mut cfg4 = base_config(None, args4);
+        let err4 = validate_config(&mut cfg4).unwrap_err();
+        assert!(err4.to_string().contains("requires either 'domain' (hostname) or 'username'"));
+
+        // 5. Invalid: group without username
+        let mut args5 = std::collections::HashMap::new();
+        args5.insert("password".to_string(), Some("p1".to_string()));
+        args5.insert("group".to_string(), Some("g1".to_string()));
+        let mut cfg5 = base_config(Some("my.dynu.com"), args5);
+        let err5 = validate_config(&mut cfg5).unwrap_err();
+        assert!(err5.to_string().contains("requires parameter 'username' in task 'dynu_test' args when 'group' is used"));
     }
 }

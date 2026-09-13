@@ -63,12 +63,14 @@ tasks:
   # Task 1: Dynu adaptive update (auto adapts to dual-stack, IPv4-only, or IPv6-only via conditional patterns)
   - name: "dynu-office-adaptive"
     # interface: "Local"       # Optional; defaults to the first interface if omitted
-    domain: "wox-office.freeddns.org" # Checks remote DNS resolution every cycle; triggers corrective update on mismatch
+    domain: "wox-office.freeddns.org" # Checks remote DNS resolution every cycle (optional if username/group is set)
     force_update_interval: 86400 # Heartbeat keepalive interval for this task (seconds)
     provider: "dynu" # Built-in adaptive provider template; query details with `rdns --provider dynu`
     args:
       password: "${DYNU_PASSWORD:-YOUR_UPDATE_PASSWORD}" # Injected as {{password}}
-      # ipv4: null             # Optional: set to null or ~ to disable IPv4 and force IPv6-only for this task
+      # username: "your_username" # Optional: account username (required when 'group' is used)
+      # group: "office_network"   # Optional: group name to update a collection of hostnames
+      # ipv4: null                # Optional: set to null or ~ to disable IPv4 and force IPv6-only for this task
 
   # Task 2: Standalone webhook with conditional URL replacement ({{?var:THEN|ELSE}})
   - name: "custom-adaptive-webhook"

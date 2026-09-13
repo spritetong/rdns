@@ -254,7 +254,7 @@ tasks:
 | Provider Name | Stack | Description | Required `args` |
 | :--- | :--- | :--- | :--- |
 | `cloudflare` | Adaptive (Dual/v4/v6) | Cloudflare DNS API v4 (adaptive batch update) | `token`, `zone_id` (`record_id_v4` if v4 active, `record_id_v6` if v6 active) |
-| `dynu` | Adaptive (Dual/v4/v6) | Dynu Systems DDNS API (auto adapts; fallback `&myipv6=no`) | `password` (optional: `username`) |
+| `dynu` | Adaptive (Dual/v4/v6) | Dynu Systems DDNS API (auto adapts; fallback `&myipv6=no`) | `password` (optional: `username`, `group`) |
 | `dynv6` | Adaptive (Dual/v4/v6) | dynv6 Free Dynamic DNS API (auto adapts) | `token` |
 | `duckdns` | Adaptive (Dual/v4/v6) | DuckDNS API (auto adapts) | `token` |
 | `he` | Adaptive (Dual/v4/v6) | Hurricane Electric Dynamic DNS (auto adapts) | `password` |
@@ -321,13 +321,14 @@ Automatically adapts to dual-stack, IPv4-only, or IPv6-only:
 tasks:
   - name: "dynu-adaptive"
     interface: "Local"
-    domain: "yourname.freeddns.org"
+    domain: "yourname.freeddns.org" # Optional if username or group is specified
     provider: "dynu"
     args:
       password: "${DYNU_PASSWORD}"
-      # username: "optional_username"
-      # ipv4: null # Optional: suppress IPv4 for IPv6-only
-      # ipv6: null # Optional: suppress IPv6 for IPv4-only
+      # username: "optional_username" # Account username (mandatory when group is used)
+      # group: "optional_group"       # Group name to update a collection of hostnames
+      # ipv4: null                    # Optional: suppress IPv4 for IPv6-only
+      # ipv6: null                    # Optional: suppress IPv6 for IPv4-only
 ```
 
 #### dynv6
