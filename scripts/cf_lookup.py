@@ -40,7 +40,7 @@ def http_get(
     headers = {
         'Authorization': f'Bearer {token}',
         'Content-Type': 'application/json',
-        'User-Agent': 'rdns-cf-lookup/1.1.0',
+        'User-Agent': 'rdns-cf-lookup/1.0',
     }
 
     req = urllib.request.Request(url, headers=headers, method='GET')

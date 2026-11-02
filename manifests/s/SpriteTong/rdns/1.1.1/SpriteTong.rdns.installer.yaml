@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
 
 PackageIdentifier: SpriteTong.rdns
-PackageVersion: 1.1.0
+PackageVersion: 1.1.1
 InstallerType: zip
 NestedInstallerType: portable
 NestedInstallerFiles:
@@ -10,12 +10,14 @@ NestedInstallerFiles:
 Commands:
   - rdns
 Installers:
+  - Architecture: x86
+    InstallerUrl: https://github.com/spritetong/rdns/releases/download/v1.1.1/rdns-v1.1.1-i686-pc-windows-msvc.zip
+    InstallerSha256: F000000000000000000000000000000000000000000000000000000000000000
   - Architecture: x64
-    InstallerUrl: https://github.com/spritetong/rdns/releases/download/v1.1.0/rdns-v1.1.0-x86_64-pc-windows-msvc.zip
+    InstallerUrl: https://github.com/spritetong/rdns/releases/download/v1.1.1/rdns-v1.1.1-x86_64-pc-windows-msvc.zip
     InstallerSha256: ECAFE3D4F90ACF2645668D3B5A88C8FECAFA41765E9612291BE6738EFA7E1283
   - Architecture: arm64
-    InstallerUrl: https://github.com/spritetong/rdns/releases/download/v1.1.0/rdns-v1.1.0-aarch64-pc-windows-msvc.zip
+    InstallerUrl: https://github.com/spritetong/rdns/releases/download/v1.1.1/rdns-v1.1.1-aarch64-pc-windows-msvc.zip
     InstallerSha256: B2511BABD428B72B3BA605F9D6D214BA309D26B84815EA86B26E2034293F5E33
 ManifestType: installer
 ManifestVersion: 1.6.0
-
