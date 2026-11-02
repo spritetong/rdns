@@ -9,7 +9,7 @@ PublisherSupportUrl: https://github.com/spritetong/rdns/issues
 PackageName: rdns
 PackageUrl: https://github.com/spritetong/rdns
 License: MPL-2.0
-LicenseUrl: https://github.com/spritetong/rdns/blob/main/LICENSE
+LicenseUrl: https://github.com/spritetong/rdns/blob/master/LICENSE
 ShortDescription: A lightweight, robust, asynchronous Dynamic DNS (DDNS) daemon written in Rust
 Description: |-
   rdns is a lightweight, robust, asynchronous Dynamic DNS (DDNS) daemon written in Rust.
@@ -25,4 +25,3 @@ Tags:
   - rust
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0
-

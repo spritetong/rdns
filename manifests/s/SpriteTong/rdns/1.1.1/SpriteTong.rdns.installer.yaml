@@ -12,12 +12,12 @@ Commands:
 Installers:
   - Architecture: x86
     InstallerUrl: https://github.com/spritetong/rdns/releases/download/v1.1.1/rdns-v1.1.1-i686-pc-windows-msvc.zip
-    InstallerSha256: F000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: 4BDC4D25980C8F783E9BE3B7110469D8AA4CC114511A6FF3DF8B7CD0CCDB3889
   - Architecture: x64
     InstallerUrl: https://github.com/spritetong/rdns/releases/download/v1.1.1/rdns-v1.1.1-x86_64-pc-windows-msvc.zip
-    InstallerSha256: ECAFE3D4F90ACF2645668D3B5A88C8FECAFA41765E9612291BE6738EFA7E1283
+    InstallerSha256: 2DF36A6581BF83F9E01CA473DDFE0A23C6D7FA716022B3864677551D7977222D
   - Architecture: arm64
     InstallerUrl: https://github.com/spritetong/rdns/releases/download/v1.1.1/rdns-v1.1.1-aarch64-pc-windows-msvc.zip
-    InstallerSha256: B2511BABD428B72B3BA605F9D6D214BA309D26B84815EA86B26E2034293F5E33
+    InstallerSha256: 07F4EAF7BEEAB09A2F6F60C39C2DA2CA95C2C3035B3873733AD7248A43516250
 ManifestType: installer
 ManifestVersion: 1.6.0
