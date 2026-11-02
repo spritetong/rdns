@@ -109,6 +109,7 @@ global:
   shutdown_timeout: 10         # Maximum graceful shutdown drain timeout
   worker_threads: 2            # Tokio worker threads (1 for embedded routers)
   log_level: "info"            # trace | debug | info | warn | error | off
+  no_color: false              # Disable ANSI color output in logs (default: false)
   # cacerts: "/path/to/extra-ca-certificates.pem" # Optional custom CA bundle (PEM or DER)
   netwatcher: true             # Enable event-driven network change detection
   netwatcher_debounce_ms: 2000 # Debounce window for network events (ms)
@@ -133,7 +134,8 @@ notification:
 interfaces:
   - name: "Local"
     interval: 300
-    dns_server: "8.8.8.8"
+    # DNS resolver to verify domain records (supports wstunnel-compatible schemes: dns://, dns+https://, dns+tls://, system://0.0.0.0, or bare IP)
+    dns_resolver: "dns://1.1.1.1"
     # Unified dual-stack IP resolution (simultaneously detects IPv4 and IPv6)
     ip:
       source: "remote"          # "remote" or "interface"
@@ -448,6 +450,10 @@ Options:
           Disable writing the state persistence file to disk [aliases: --no-state-file, --no-save-state]
       --no-netwatcher
           Disable netwatcher event-driven network change detection (fallback to timer polling)
+      --no-color
+          Disable ANSI color output in logs [alias: --no-colour]
+      --dns-resolver <RESOLVER>
+          DNS resolver to use to lookup domain names (can be specified multiple times; e.g. dns://1.1.1.1, dns+https://1.1.1.1?sni=cloudflare-dns.com, dns+tls://8.8.8.8?sni=dns.google, system://0.0.0.0) [alias: --dns-server]
   -l, --log-level <LEVEL>
           Log level filter (trace, debug, info, warn, error, off) [default: info]
   -h, --help
@@ -463,6 +469,6 @@ Cloudflare Helper:
 
 ## 📄 License
 
-This project is licensed under the **GNU General Public License v3.0** (GPL-3.0-or-later). See the [LICENSE](LICENSE) file for details.
+This project is licensed under the **Mozilla Public License Version 2.0** (MPL-2.0). See the [LICENSE](LICENSE) file for details.
 
 **Author**: Sprite Tong ([spritetong@gmail.com](mailto:spritetong@gmail.com))

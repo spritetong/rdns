@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! State management and atomic persistence storage.
 
@@ -350,4 +350,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-

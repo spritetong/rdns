@@ -5,8 +5,15 @@ global:
   shutdown_timeout: 10 # Maximum graceful shutdown wait timeout (seconds)
   worker_threads: 2 # Tokio worker threads (set to 1 for ultra-lightweight single-thread; omitted defaults to CPU core count)
   log_level: "info" # trace | debug | info | warn | error | off
+  no_color: false # Disable ANSI color output in logs (default: false)
   # proxy: "http://127.0.0.1:7890" # Optional global proxy (supports http / socks5)
   # cacerts: "/path/to/custom-ca-bundle.pem" # Optional custom CA certificates file (PEM bundle or DER)
+  # dns_resolver: "dns://1.1.1.1" # Dns resolver to use to lookup ips of domain name. Can be specified multiple times.
+  # Examples:
+  #   - "dns://1.1.1.1"                               # UDP (port 53)
+  #   - "dns+https://1.1.1.1?sni=cloudflare-dns.com"  # DNS over HTTPS (DoH)
+  #   - "dns+tls://8.8.8.8?sni=dns.google"            # DNS over TLS (DoT)
+  #   - "system://0.0.0.0"                           # OS native libc resolver
 
 # Generic notification system (optional)
 notification:
@@ -40,7 +47,10 @@ interfaces:
   - name: "Local"
     interval: 300
     retry_interval: 60 # Optional override: fast retry interval when update fails and DNS records mismatch
-    dns_server: "8.8.8.8" # Optional DNS server used to check actual remote DNS records (auto-recovers if cloud record is drifted)
+    # dns_resolver: "dns://1.1.1.1" # Optional DNS resolver to check actual remote DNS records (supports dns://, dns+https://, dns+tls://, system://0.0.0.0)
+    # dns_resolver: # Can also be specified as a list of resolvers
+    #   - "dns://1.1.1.1"
+    #   - "dns+https://1.1.1.1?sni=cloudflare-dns.com" 
 
     # Unified dual-stack query profile (simultaneously detects both IPv4 and IPv6)
     # Source can be "remote" or "interface"

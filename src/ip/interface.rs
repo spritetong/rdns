@@ -1,11 +1,11 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Local network interface IP reader and intelligent address filter.
 
 use crate::error::IpFetchError;
-use ifaddrsx::{get_interfaces, AddrFlags, DadState, IfAddr};
+use ifaddrsx::{AddrFlags, DadState, IfAddr, get_interfaces};
 pub use ifaddrsx::{Ipv4AddrExt, Ipv6AddrExt};
 use regex::Regex;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -384,4 +384,3 @@ mod tests {
         assert!(!loopback.is_global_unicast_ipv6());
     }
 }
-

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Predefined DDNS provider templates and registry.
 
@@ -170,7 +170,9 @@ pub static PROVIDERS: &[Provider] = &[
             ("Authorization", "Bearer {{token}}"),
             ("Content-Type", "application/json"),
         ],
-        default_body: Some(r#"{"patches":[{{?ipv4:{"id":"{{record_id_v4}}","content":"{}"}}},{{?ipv6:{"id":"{{record_id_v6}}","content":"{}"}}}]}"#),
+        default_body: Some(
+            r#"{"patches":[{{?ipv4:{"id":"{{record_id_v4}}","content":"{}"}}},{{?ipv6:{"id":"{{record_id_v6}}","content":"{}"}}}]}"#,
+        ),
         default_success_regex: Some(r#""success"\s*:\s*true"#),
         default_success_contains: &[],
         example_yaml: r#"  - name: "cloudflare-adaptive"
@@ -393,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_cloudflare_adaptive_rendering() {
-        use crate::engine::template::{render_template, TemplateContext};
+        use crate::engine::template::{TemplateContext, render_template};
         use std::collections::HashMap;
 
         let cf = get_provider("cloudflare").expect("cloudflare must exist");

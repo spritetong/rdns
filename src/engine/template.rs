@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Secure placeholder template replacement.
 
@@ -283,7 +283,6 @@ pub fn sanitize_json_commas(input: &str) -> String {
     output
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,7 +375,8 @@ mod tests {
         };
 
         // dynv6 style
-        let tmpl = "https://dynv6.com/api/update?hostname={{domain}}{{?ipv4:&ipv4={}}}{{?ipv6:&ipv6={}}}";
+        let tmpl =
+            "https://dynv6.com/api/update?hostname={{domain}}{{?ipv4:&ipv4={}}}{{?ipv6:&ipv6={}}}";
         let res = render_template(tmpl, &ctx).unwrap();
         assert_eq!(
             res,
@@ -403,7 +403,8 @@ mod tests {
         };
 
         // dynv6 style: IPv6 omitted completely
-        let tmpl = "https://dynv6.com/api/update?hostname={{domain}}{{?ipv4:&ipv4={}}}{{?ipv6:&ipv6={}}}";
+        let tmpl =
+            "https://dynv6.com/api/update?hostname={{domain}}{{?ipv4:&ipv4={}}}{{?ipv6:&ipv6={}}}";
         let res = render_template(tmpl, &ctx).unwrap();
         assert_eq!(
             res,
@@ -430,7 +431,8 @@ mod tests {
         };
 
         // dynv6 style: IPv4 omitted completely
-        let tmpl = "https://dynv6.com/api/update?hostname={{domain}}{{?ipv4:&ipv4={}}}{{?ipv6:&ipv6={}}}";
+        let tmpl =
+            "https://dynv6.com/api/update?hostname={{domain}}{{?ipv4:&ipv4={}}}{{?ipv6:&ipv6={}}}";
         let res = render_template(tmpl, &ctx).unwrap();
         assert_eq!(
             res,
@@ -563,4 +565,3 @@ mod tests {
         assert_eq!(res_none, r#"{"patches":[]}"#);
     }
 }
-

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Validation rules for configuration entities.
 
@@ -74,8 +74,8 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
         });
     }
 
-    if let Some(ref dns) = config.global.dns_server {
-        validate_dns_server(dns, "global.dns_server")?;
+    if let Some(ref dns) = config.global.dns_resolver {
+        validate_dns_resolvers(dns, "global.dns_resolver")?;
     }
 
     if let Some(ref cacerts) = config.global.cacerts {
@@ -122,8 +122,8 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
             });
         }
 
-        if let Some(ref dns) = iface.dns_server {
-            validate_dns_server(dns, &format!("interfaces[{}].dns_server", iface.name))?;
+        if let Some(ref dns) = iface.dns_resolver {
+            validate_dns_resolvers(dns, &format!("interfaces[{}].dns_resolver", iface.name))?;
         }
 
         let eff_v4 = iface.effective_ipv4_strategy();
@@ -246,9 +246,7 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
                         ),
                     });
                 }
-            } else if p.requires_domain
-                && task.domain.as_deref().unwrap_or("").trim().is_empty()
-            {
+            } else if p.requires_domain && task.domain.as_deref().unwrap_or("").trim().is_empty() {
                 return Err(ConfigError::Validation {
                     field: format!("tasks[{}].domain", task.name),
                     message: format!(
@@ -278,10 +276,13 @@ pub fn validate_config(config: &mut Config) -> Result<(), ConfigError> {
 
             // Cloudflare specific validation for active stack record IDs
             if p.name == "cloudflare" {
-                let iface_name = task
-                    .interface
-                    .as_deref()
-                    .unwrap_or(config.interfaces.first().map(|i| i.name.as_str()).unwrap_or(""));
+                let iface_name = task.interface.as_deref().unwrap_or(
+                    config
+                        .interfaces
+                        .first()
+                        .map(|i| i.name.as_str())
+                        .unwrap_or(""),
+                );
                 let target_iface = config.interfaces.iter().find(|i| i.name == iface_name);
                 let iface_v4_enabled = target_iface
                     .and_then(|i| i.effective_ipv4_strategy())
@@ -423,12 +424,60 @@ fn is_task_protocol_active(
     }
 }
 
-fn validate_dns_server(val: &str, field: &str) -> Result<(), ConfigError> {
-    if val.trim().is_empty() {
+fn validate_dns_resolvers(resolvers: &[String], field: &str) -> Result<(), ConfigError> {
+    if resolvers.is_empty() {
         return Err(ConfigError::Validation {
             field: field.to_string(),
-            message: "dns_server cannot be empty".to_string(),
+            message: "dns_resolver cannot be empty".to_string(),
         });
+    }
+
+    for (idx, r) in resolvers.iter().enumerate() {
+        let trimmed = r.trim();
+        if trimmed.is_empty() {
+            return Err(ConfigError::Validation {
+                field: format!("{}[{}]", field, idx),
+                message: "DNS resolver entry cannot be empty".to_string(),
+            });
+        }
+
+        if trimmed.starts_with("system://") || trimmed.eq_ignore_ascii_case("system") {
+            continue;
+        }
+
+        let url_str = if !trimmed.contains("://") {
+            format!("dns://{}", trimmed)
+        } else {
+            trimmed.to_string()
+        };
+
+        match url::Url::parse(&url_str) {
+            Ok(u) => match u.scheme() {
+                "dns" | "dns+https" | "https" | "dns+tls" | "tls" | "system" => {
+                    if u.host().is_none() {
+                        return Err(ConfigError::Validation {
+                            field: format!("{}[{}]", field, idx),
+                            message: format!("DNS resolver '{}' is missing a host", r),
+                        });
+                    }
+                }
+                other => {
+                    return Err(ConfigError::Validation {
+                        field: format!("{}[{}]", field, idx),
+                        message: format!(
+                            "Unsupported DNS resolver scheme '{}'. Supported: dns://, dns+https://, dns+tls://, system://0.0.0.0",
+                            other
+                        ),
+                    });
+                }
+            },
+            Err(e) => {
+                return Err(ConfigError::Validation {
+                    field: format!("{}[{}]", field, idx),
+                    message: format!("Invalid DNS resolver format '{}': {}", r, e),
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -465,10 +514,7 @@ fn validate_strategy_config(
             if let Err(e) = Regex::new(iface_pattern) {
                 return Err(ConfigError::Validation {
                     field: format!("{}.interface", field_prefix),
-                    message: format!(
-                        "Invalid interface regex pattern '{}': {}",
-                        iface_pattern, e
-                    ),
+                    message: format!("Invalid interface regex pattern '{}': {}", iface_pattern, e),
                 });
             }
             if let Some(ref r) = strat.ipv6_regex
@@ -517,7 +563,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -561,7 +607,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -607,7 +653,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -662,7 +708,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -708,7 +754,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -746,7 +792,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -790,7 +836,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -831,7 +877,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -875,7 +921,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -916,7 +962,7 @@ mod tests {
                 name: "test".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -957,7 +1003,7 @@ mod tests {
                 name: "test-bad-regex".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -998,7 +1044,7 @@ mod tests {
                 name: "eth0".to_string(),
                 interval: None,
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: None,
                 ipv6: None,
@@ -1030,7 +1076,7 @@ mod tests {
                 name: "eth0".to_string(),
                 interval: None,
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: None,
                 ipv6: None,
@@ -1063,7 +1109,7 @@ mod tests {
                 name: "dual_iface".to_string(),
                 interval: Some(300),
                 retry_interval: None,
-                dns_server: None,
+                dns_resolver: None,
                 ip: None,
                 ipv4: Some(IpStrategyConfig {
                     enabled: true,
@@ -1105,7 +1151,10 @@ mod tests {
         args1.insert("record_id_v6".to_string(), Some("v6_rec".to_string()));
         let mut cfg1 = make_cf_config(args1);
         let err1 = validate_config(&mut cfg1).unwrap_err();
-        assert!(err1.to_string().contains("requires parameter 'record_id_v4'"));
+        assert!(
+            err1.to_string()
+                .contains("requires parameter 'record_id_v4'")
+        );
 
         // 2. Dual-stack missing record_id_v6
         let mut args2 = std::collections::HashMap::new();
@@ -1114,7 +1163,10 @@ mod tests {
         args2.insert("record_id_v4".to_string(), Some("v4_rec".to_string()));
         let mut cfg2 = make_cf_config(args2);
         let err2 = validate_config(&mut cfg2).unwrap_err();
-        assert!(err2.to_string().contains("requires parameter 'record_id_v6'"));
+        assert!(
+            err2.to_string()
+                .contains("requires parameter 'record_id_v6'")
+        );
 
         // 3. Dual-stack with both succeeds
         let mut args3 = std::collections::HashMap::new();
@@ -1239,8 +1291,8 @@ mod tests {
         };
         assert!(validate_config(&mut config).is_ok());
         let iface = &config.interfaces[0];
-        assert_eq!(iface.effective_ipv4_strategy().unwrap().enabled, false);
-        assert_eq!(iface.effective_ipv6_strategy().unwrap().enabled, true);
+        assert!(!iface.effective_ipv4_strategy().unwrap().enabled);
+        assert!(iface.effective_ipv6_strategy().unwrap().enabled);
     }
 
     #[test]
@@ -1298,7 +1350,10 @@ mod tests {
             }],
         };
         let err = validate_config(&mut config).unwrap_err();
-        assert!(err.to_string().contains("At least one of 'ip', 'ipv4', or 'ipv6' must be enabled"));
+        assert!(
+            err.to_string()
+                .contains("At least one of 'ip', 'ipv4', or 'ipv6' must be enabled")
+        );
     }
 
     #[test]
@@ -1326,33 +1381,39 @@ mod tests {
             }],
         };
         let err = validate_config(&mut config).unwrap_err();
-        assert!(err.to_string().contains("Remote IP source requires at least one URL"));
+        assert!(
+            err.to_string()
+                .contains("Remote IP source requires at least one URL")
+        );
     }
 
     #[test]
     fn test_dynu_validation_domain_username_group() {
-        let base_config = |domain: Option<&str>, args: std::collections::HashMap<String, Option<String>>| Config {
-            global: GlobalConfig::default(),
-            interfaces: vec![InterfaceConfig {
-                name: "test".to_string(),
-                ip: Some(IpStrategyConfig {
-                    source: "remote".to_string(),
-                    urls: vec!["https://api.ipify.org".to_string()],
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }],
-            notification: None,
-            tasks: vec![TaskConfig {
-                name: "dynu_test".to_string(),
-                interface: None,
-                force_update_interval: None,
-                domain: domain.map(|s| s.to_string()),
-                provider: Some("dynu".to_string()),
-                args,
-                request: None,
-            }],
-        };
+        let base_config =
+            |domain: Option<&str>, args: std::collections::HashMap<String, Option<String>>| {
+                Config {
+                    global: GlobalConfig::default(),
+                    interfaces: vec![InterfaceConfig {
+                        name: "test".to_string(),
+                        ip: Some(IpStrategyConfig {
+                            source: "remote".to_string(),
+                            urls: vec!["https://api.ipify.org".to_string()],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }],
+                    notification: None,
+                    tasks: vec![TaskConfig {
+                        name: "dynu_test".to_string(),
+                        interface: None,
+                        force_update_interval: None,
+                        domain: domain.map(|s| s.to_string()),
+                        provider: Some("dynu".to_string()),
+                        args,
+                        request: None,
+                    }],
+                }
+            };
 
         // 1. Valid: domain + password
         let mut args1 = std::collections::HashMap::new();
@@ -1380,7 +1441,10 @@ mod tests {
         args4.insert("password".to_string(), Some("p1".to_string()));
         let mut cfg4 = base_config(None, args4);
         let err4 = validate_config(&mut cfg4).unwrap_err();
-        assert!(err4.to_string().contains("requires either 'domain' (hostname) or 'username'"));
+        assert!(
+            err4.to_string()
+                .contains("requires either 'domain' (hostname) or 'username'")
+        );
 
         // 5. Invalid: group without username
         let mut args5 = std::collections::HashMap::new();
@@ -1388,6 +1452,25 @@ mod tests {
         args5.insert("group".to_string(), Some("g1".to_string()));
         let mut cfg5 = base_config(Some("my.dynu.com"), args5);
         let err5 = validate_config(&mut cfg5).unwrap_err();
-        assert!(err5.to_string().contains("requires parameter 'username' in task 'dynu_test' args when 'group' is used"));
+        assert!(err5.to_string().contains(
+            "requires parameter 'username' in task 'dynu_test' args when 'group' is used"
+        ));
+    }
+
+    #[test]
+    fn test_validate_dns_resolvers() {
+        let valid = vec![
+            "dns://1.1.1.1".to_string(),
+            "dns+https://1.1.1.1?sni=cloudflare-dns.com".to_string(),
+            "dns+tls://8.8.8.8?sni=dns.google".to_string(),
+            "system://0.0.0.0".to_string(),
+            "8.8.8.8".to_string(),
+        ];
+        assert!(validate_dns_resolvers(&valid, "test").is_ok());
+
+        assert!(validate_dns_resolvers(&[], "test").is_err());
+        assert!(validate_dns_resolvers(&["   ".to_string()], "test").is_err());
+        assert!(validate_dns_resolvers(&["ftp://1.1.1.1".to_string()], "test").is_err());
+        assert!(validate_dns_resolvers(&["dns://".to_string()], "test").is_err());
     }
 }

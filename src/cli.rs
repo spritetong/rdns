@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Command-line interface definitions and parsing.
 
@@ -80,6 +80,19 @@ pub struct Cli {
     #[arg(long = "no-netwatcher")]
     pub no_netwatcher: bool,
 
+    /// Disable ANSI color output in logs
+    #[arg(long = "no-color", visible_alias = "no-colour")]
+    pub no_color: bool,
+
+    /// DNS resolver to use to lookup domain names (can be specified multiple times; e.g. dns://1.1.1.1, dns+https://1.1.1.1?sni=cloudflare-dns.com, dns+tls://8.8.8.8?sni=dns.google, system://0.0.0.0)
+    #[arg(
+        long = "dns-resolver",
+        visible_alias = "dns-server",
+        value_name = "RESOLVER",
+        action = clap::ArgAction::Append
+    )]
+    pub dns_resolver: Vec<String>,
+
     /// Log level filter (trace, debug, info, warn, error, off) [default: info]
     #[arg(
         short = 'l',
@@ -135,6 +148,12 @@ impl Cli {
     #[allow(dead_code)]
     pub fn log_level(&self) -> LogLevel {
         self.log_level.unwrap_or(LogLevel::Info)
+    }
+
+    /// Returns whether ANSI color output should be disabled.
+    #[allow(dead_code)]
+    pub fn no_color(&self) -> bool {
+        self.no_color
     }
 }
 
@@ -207,6 +226,46 @@ mod tests {
 
         let cli_save = Cli::try_parse_from(["rdns", "--save-state", "false"]).unwrap();
         assert!(!cli_save.should_write_state());
+    }
+
+    #[test]
+    fn test_dns_resolver_cli_parsing() {
+        let cli = Cli::try_parse_from([
+            "rdns",
+            "--dns-resolver",
+            "dns://1.1.1.1",
+            "--dns-resolver",
+            "dns+https://1.1.1.1?sni=cloudflare-dns.com",
+            "--dns-server",
+            "dns+tls://8.8.8.8?sni=dns.google",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.dns_resolver,
+            vec![
+                "dns://1.1.1.1".to_string(),
+                "dns+https://1.1.1.1?sni=cloudflare-dns.com".to_string(),
+                "dns+tls://8.8.8.8?sni=dns.google".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_default_no_color_is_false() {
+        let cli = Cli::try_parse_from(["rdns"]).unwrap();
+        assert!(!cli.no_color);
+        assert!(!cli.no_color());
+    }
+
+    #[test]
+    fn test_no_color_flag_parsed() {
+        let cli = Cli::try_parse_from(["rdns", "--no-color"]).unwrap();
+        assert!(cli.no_color);
+        assert!(cli.no_color());
+
+        let cli_alias = Cli::try_parse_from(["rdns", "--no-colour"]).unwrap();
+        assert!(cli_alias.no_color);
+        assert!(cli_alias.no_color());
     }
 
     #[test]

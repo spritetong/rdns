@@ -1,9 +1,9 @@
 [package]
 name = "rdns"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 authors = ["Sprite Tong <spritetong@gmail.com>"]
-license = "GPL-3.0-or-later"
+license = "MPL-2.0"
 description = "A lightweight, robust, asynchronous Dynamic DNS (DDNS) daemon written in Rust"
 repository = "https://github.com/spritetong/rdns"
 readme = "README.md"
@@ -19,7 +19,7 @@ strip = true
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "socks"] }
 rustls-native-certs = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
@@ -32,6 +32,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
-hickory-resolver = { version = "0.26", features = ["tokio"] }
+hickory-resolver = { version = "0.26", features = ["tokio", "system-config", "tls-aws-lc-rs", "https-aws-lc-rs", "webpki-roots"] }
+url = "2"
 ifaddrsx = "0.5"
 netwatcher = { version = "0.8", features = ["tokio"] }

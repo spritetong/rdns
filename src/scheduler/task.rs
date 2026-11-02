@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Interface IP polling loop and bound task execution logic.
 
@@ -25,7 +25,7 @@ pub struct TaskContext {
     pub state_store: StateStore,
     pub notifier: NotificationDispatcher,
     pub dns_resolver: DnsResolver,
-    pub dns_server: Option<String>,
+    pub dns_resolver_cfg: Option<Vec<String>>,
     pub timeout: Duration,
     pub normal_interval_secs: u64,
     pub dry_run: bool,
@@ -178,7 +178,11 @@ impl TaskExecutor {
                 match self
                     .ctx
                     .dns_resolver
-                    .resolve(domain, self.ctx.dns_server.as_deref(), self.ctx.timeout)
+                    .resolve(
+                        domain,
+                        self.ctx.dns_resolver_cfg.as_deref(),
+                        self.ctx.timeout,
+                    )
                     .await
                 {
                     Ok((dns_v4, dns_v6)) => {
@@ -304,10 +308,7 @@ impl TaskExecutor {
                     hb.last_attempt_time = None;
                 }
                 if self.ctx.dry_run {
-                    tracing::info!(
-                        "[{}] Dry Run: NO update sent (preview verified)",
-                        task_name
-                    );
+                    tracing::info!("[{}] Dry Run: NO update sent (preview verified)", task_name);
                 } else if is_heartbeat_attempt {
                     tracing::info!(
                         "[{}] Forced update successful - IP '{}' sent",
@@ -394,7 +395,11 @@ impl TaskExecutor {
                         match self
                             .ctx
                             .dns_resolver
-                            .resolve(domain, self.ctx.dns_server.as_deref(), self.ctx.timeout)
+                            .resolve(
+                                domain,
+                                self.ctx.dns_resolver_cfg.as_deref(),
+                                self.ctx.timeout,
+                            )
                             .await
                         {
                             Ok((dns_v4, dns_v6)) => {
@@ -495,11 +500,7 @@ impl InterfaceScheduler {
                     task: iface_name.clone(),
                     source: e,
                 };
-                tracing::error!(
-                    "[{}] Failed to detect current IP: {}",
-                    iface_name,
-                    err
-                );
+                tracing::error!("[{}] Failed to detect current IP: {}", iface_name, err);
                 return InterfaceRunOutcome {
                     should_shorten_interval: true,
                     has_error: true,
@@ -514,11 +515,7 @@ impl InterfaceScheduler {
             (None, None) => "none".to_string(),
         };
 
-        tracing::info!(
-            "[{}] Current IP {} detected",
-            iface_name,
-            ip_desc
-        );
+        tracing::info!("[{}] Current IP {} detected", iface_name, ip_desc);
 
         let mut join_set = tokio::task::JoinSet::new();
         for task in &self.tasks {
@@ -540,12 +537,7 @@ impl InterfaceScheduler {
                         should_shorten_interval = true;
                     }
                     if let Some(e) = outcome.error {
-                        tracing::error!(
-                            "[{}] Task '{}' failed: {}",
-                            iface_name,
-                            task_name,
-                            e
-                        );
+                        tracing::error!("[{}] Task '{}' failed: {}", iface_name, task_name, e);
                         has_error = true;
                     }
                 }
@@ -591,19 +583,13 @@ impl InterfaceScheduler {
 
         loop {
             if token.is_cancelled() {
-                tracing::info!(
-                    "[{}] Received cancellation, terminating loop",
-                    iface_name
-                );
+                tracing::info!("[{}] Received cancellation, terminating loop", iface_name);
                 break;
             }
 
             let outcome = self.run_round().await;
             if outcome.has_error {
-                tracing::warn!(
-                    "[{}] Encountered error during check round",
-                    iface_name
-                );
+                tracing::warn!("[{}] Encountered error during check round", iface_name);
             }
 
             let next_interval = if outcome.should_shorten_interval {
@@ -674,7 +660,7 @@ mod tests {
             state_store,
             notifier,
             dns_resolver,
-            dns_server: None,
+            dns_resolver_cfg: None,
             timeout: Duration::from_millis(500),
             normal_interval_secs: 60,
             dry_run: false,
@@ -725,7 +711,7 @@ mod tests {
             state_store,
             notifier,
             dns_resolver,
-            dns_server: None,
+            dns_resolver_cfg: None,
             timeout: Duration::from_millis(500),
             normal_interval_secs: 60,
             dry_run: true,
@@ -774,7 +760,7 @@ mod tests {
             state_store,
             notifier,
             dns_resolver,
-            dns_server: None,
+            dns_resolver_cfg: None,
             timeout: Duration::from_millis(500),
             normal_interval_secs: 60,
             dry_run: true,
@@ -854,7 +840,7 @@ mod tests {
             state_store: state_store.clone(),
             notifier: notifier.clone(),
             dns_resolver,
-            dns_server: None,
+            dns_resolver_cfg: None,
             timeout: Duration::from_millis(500),
             normal_interval_secs: 60,
             dry_run: false,
@@ -900,7 +886,7 @@ mod tests {
             state_store,
             notifier,
             dns_resolver,
-            dns_server: None,
+            dns_resolver_cfg: None,
             timeout: Duration::from_millis(500),
             normal_interval_secs: 60,
             dry_run: false,
@@ -953,7 +939,7 @@ mod tests {
             state_store: state_store.clone(),
             notifier,
             dns_resolver,
-            dns_server: None,
+            dns_resolver_cfg: None,
             timeout: Duration::from_millis(500),
             normal_interval_secs: 300,
             dry_run: false,
@@ -992,7 +978,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_args_null_ipv4_suppression() {
-        let tmp_dir = std::env::temp_dir().join(format!("rdns_test_suppress_{}", std::process::id()));
+        let tmp_dir =
+            std::env::temp_dir().join(format!("rdns_test_suppress_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp_dir);
         std::fs::create_dir_all(&tmp_dir).unwrap();
         let state_path = tmp_dir.join("state.json");
@@ -1008,7 +995,7 @@ mod tests {
             state_store: state_store.clone(),
             notifier,
             dns_resolver,
-            dns_server: None,
+            dns_resolver_cfg: None,
             timeout: Duration::from_millis(500),
             normal_interval_secs: 60,
             dry_run: true,
@@ -1058,10 +1045,22 @@ mod tests {
         assert_eq!(resolve_task_ip(iface_ip, Some(&Some("".to_string()))), None);
 
         // 4. Some(Some("none")) / "false" in args -> suppressed
-        assert_eq!(resolve_task_ip(iface_ip, Some(&Some("none".to_string()))), None);
-        assert_eq!(resolve_task_ip(iface_ip, Some(&Some("false".to_string()))), None);
-        assert_eq!(resolve_task_ip(iface_ip, Some(&Some("null".to_string()))), None);
-        assert_eq!(resolve_task_ip(iface_ip, Some(&Some("~".to_string()))), None);
+        assert_eq!(
+            resolve_task_ip(iface_ip, Some(&Some("none".to_string()))),
+            None
+        );
+        assert_eq!(
+            resolve_task_ip(iface_ip, Some(&Some("false".to_string()))),
+            None
+        );
+        assert_eq!(
+            resolve_task_ip(iface_ip, Some(&Some("null".to_string()))),
+            None
+        );
+        assert_eq!(
+            resolve_task_ip(iface_ip, Some(&Some("~".to_string()))),
+            None
+        );
 
         // 5. Some(Some("5.6.7.8")) in args -> static override
         assert_eq!(
@@ -1070,4 +1069,3 @@ mod tests {
         );
     }
 }
-

@@ -10,31 +10,53 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test
+
   build:
     name: Build (${{ matrix.target }})
+    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64 glibc
+          # Linux x86_64 glibc (baseline glibc 2.28 via zig, Cross.toml)
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            use_cross: false
+            os: ubuntu-22.04
+            use_cross: true
 
           # Linux x86_64 musl (static standalone / Alpine)
           - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-22.04
             use_cross: true
 
-          # Linux aarch64 glibc (ARM64 servers / Raspberry Pi)
+          # Linux aarch64 glibc (baseline glibc 2.28 via zig, Cross.toml)
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
             use_cross: true
 
           # Linux aarch64 musl (static ARM64 / OpenWrt / ImmortalWrt)
           - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
+            os: ubuntu-22.04
             use_cross: true
 
           # macOS Apple Silicon (ARM64)
@@ -115,23 +137,23 @@ jobs:
           Copy-Item README.md, LICENSE, config-example.yaml -Destination $ArchiveName/
           Copy-Item scripts -Destination $ArchiveName/ -Recurse
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$ArchiveName/scripts/__pycache__"
-          tar -cJf "${ArchiveName}.tar.xz" $ArchiveName
-          $Hash = (Get-FileHash -Algorithm SHA256 "${ArchiveName}.tar.xz").Hash.ToLower()
-          "$Hash  ${ArchiveName}.tar.xz" | Out-File -Encoding ascii "${ArchiveName}.tar.xz.sha256"
+          Compress-Archive -Path "$ArchiveName/*" -DestinationPath "${ArchiveName}.zip" -Force
+          Remove-Item -Recurse -Force $ArchiveName
+          $Hash = (Get-FileHash -Algorithm SHA256 "${ArchiveName}.zip").Hash.ToLower()
+          "$Hash  ${ArchiveName}.zip" | Out-File -Encoding ascii "${ArchiveName}.zip.sha256"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: packages-${{ matrix.target }}
           path: |
-            rdns-*.tar.xz
-            rdns-*.tar.xz.sha256
+            rdns-*.*
           if-no-files-found: error
 
   release:
     name: Publish Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     if: startsWith(github.ref, 'refs/tags/v')
@@ -153,6 +175,7 @@ jobs:
         with:
           files: |
             dist/*.tar.xz
+            dist/*.zip
             dist/SHA256SUMS.txt
           generate_release_notes: true
           draft: false

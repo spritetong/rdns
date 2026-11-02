@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Network change monitoring powered by `netwatcher`.
 //!
@@ -9,8 +9,8 @@
 //! Modern Standby DNS readiness verification.
 
 use crate::ip::DnsResolver;
-use netwatcher::async_adapter::Tokio;
 use netwatcher::Update;
+use netwatcher::async_adapter::Tokio;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -51,10 +51,7 @@ pub fn has_valid_active_ip(iface: &netwatcher::Interface) -> bool {
 
 /// Inspect an update from `netwatcher` and determine if it represents a meaningful
 /// physical or routable network change, filtering out virtual adapter noise.
-pub fn is_meaningful_network_update(
-    update: &Update,
-    configured_interfaces: &[String],
-) -> bool {
+pub fn is_meaningful_network_update(update: &Update, configured_interfaces: &[String]) -> bool {
     if update.is_initial {
         return false;
     }
@@ -67,8 +64,12 @@ pub fn is_meaningful_network_update(
                 return false;
             }
             trimmed.eq_ignore_ascii_case(name)
-                || name.to_ascii_lowercase().contains(&trimmed.to_ascii_lowercase())
-                || regex::Regex::new(trimmed).map(|r| r.is_match(name)).unwrap_or(false)
+                || name
+                    .to_ascii_lowercase()
+                    .contains(&trimmed.to_ascii_lowercase())
+                || regex::Regex::new(trimmed)
+                    .map(|r| r.is_match(name))
+                    .unwrap_or(false)
         }) {
             return false;
         }
@@ -119,7 +120,7 @@ pub fn is_meaningful_network_update(
 /// This lightweight probe queries targets with short retries before dispatching tasks.
 pub async fn wait_for_dns_readiness(
     dns_resolver: &DnsResolver,
-    dns_server: Option<&str>,
+    dns_resolvers: Option<&[String]>,
     probe_targets: &[String],
     max_wait: Duration,
 ) -> bool {
@@ -136,7 +137,10 @@ pub async fn wait_for_dns_readiness(
         };
 
         let query_timeout = Duration::from_millis(500);
-        match dns_resolver.resolve(target, dns_server, query_timeout).await {
+        match dns_resolver
+            .resolve(target, dns_resolvers, query_timeout)
+            .await
+        {
             Ok(_) => {
                 tracing::debug!(
                     "[netwatcher] DNS readiness verified via '{}' on attempt {}",
@@ -171,7 +175,7 @@ pub struct NetworkWatcher {
     configured_interfaces: Vec<String>,
     probe_targets: Vec<String>,
     dns_resolver: DnsResolver,
-    dns_server: Option<String>,
+    dns_resolvers: Option<Vec<String>>,
 }
 
 impl NetworkWatcher {
@@ -181,7 +185,7 @@ impl NetworkWatcher {
         configured_interfaces: Vec<String>,
         probe_targets: Vec<String>,
         dns_resolver: DnsResolver,
-        dns_server: Option<String>,
+        dns_resolvers: Option<Vec<String>>,
     ) -> Self {
         Self {
             notifier,
@@ -189,7 +193,7 @@ impl NetworkWatcher {
             configured_interfaces,
             probe_targets,
             dns_resolver,
-            dns_server,
+            dns_resolvers,
         }
     }
 
@@ -269,7 +273,7 @@ impl NetworkWatcher {
             // 5. Modern Standby / Wake protection: Probe DNS readiness before triggering tasks
             wait_for_dns_readiness(
                 &self.dns_resolver,
-                self.dns_server.as_deref(),
+                self.dns_resolvers.as_deref(),
                 &self.probe_targets,
                 Duration::from_secs(3),
             )
@@ -292,8 +296,12 @@ mod tests {
     fn test_virtual_adapter_filtering() {
         assert!(is_virtual_or_ignored_adapter("vEthernet (WSL)"));
         assert!(is_virtual_or_ignored_adapter("vEthernet (Default Switch)"));
-        assert!(is_virtual_or_ignored_adapter("VirtualBox Host-Only Ethernet Adapter"));
-        assert!(is_virtual_or_ignored_adapter("VMware Network Adapter VMnet1"));
+        assert!(is_virtual_or_ignored_adapter(
+            "VirtualBox Host-Only Ethernet Adapter"
+        ));
+        assert!(is_virtual_or_ignored_adapter(
+            "VMware Network Adapter VMnet1"
+        ));
         assert!(is_virtual_or_ignored_adapter("Loopback Pseudo-Interface 1"));
         assert!(is_virtual_or_ignored_adapter("docker0"));
         assert!(is_virtual_or_ignored_adapter("tap-windows6"));
@@ -329,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_configured_virtual_adapter_whitelist() {
-        let configured = vec!["tun0".to_string(), "vEthernet".to_string()];
+        let configured = ["tun0".to_string(), "vEthernet".to_string()];
         let is_ignored = |name: &str| -> bool {
             if configured.iter().any(|c| {
                 let trimmed = c.trim();
@@ -337,8 +345,12 @@ mod tests {
                     return false;
                 }
                 trimmed.eq_ignore_ascii_case(name)
-                    || name.to_ascii_lowercase().contains(&trimmed.to_ascii_lowercase())
-                    || regex::Regex::new(trimmed).map(|r| r.is_match(name)).unwrap_or(false)
+                    || name
+                        .to_ascii_lowercase()
+                        .contains(&trimmed.to_ascii_lowercase())
+                    || regex::Regex::new(trimmed)
+                        .map(|r| r.is_match(name))
+                        .unwrap_or(false)
             }) {
                 return false;
             }

@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-# SPDX-License-Identifier: GPL-3.0-or-later
-# rdns is licensed under the GNU GPL v3.0 or later.
+# SPDX-License-Identifier: MPL-2.0
+# rdns is licensed under the Mozilla Public License Version 2.0.
 
 """
 Automated functional test suite for RDNS using FastAPI mock server.
@@ -349,6 +349,54 @@ def run_tests():
             f'Logs should appear with -l info: {combined_info}'
         )
         print('  [PASS] -l info emitted standard operational logs')
+
+        # -------------------------------------------------------------------
+        # Test 9: Testing --no-color and dependency logging suppression
+        # -------------------------------------------------------------------
+        print('\n[TEST 9] Testing --no-color and dependency log suppression...')
+        res_no_color = subprocess.run(
+            [str(binary), '--dry-run', '-c', str(CONFIG_PATH), '--no-color', '-l', 'debug'],
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding='utf-8',
+        )
+        assert res_no_color.returncode == 0, f'--no-color run failed: {res_no_color.stderr}'
+        combined_debug = res_no_color.stdout + res_no_color.stderr
+        assert '\x1b[' not in combined_debug, f'ANSI escape sequences found in --no-color output: {combined_debug}'
+        assert 'starting new connection' not in combined_debug, f'reqwest connection logs found: {combined_debug}'
+        assert 'hickory' not in combined_debug.lower(), f'hickory logs found: {combined_debug}'
+        print('  [PASS] --no-color and dependency log suppression verified')
+
+        # -------------------------------------------------------------------
+        # Test 10: Testing --dns-resolver options and validation
+        # -------------------------------------------------------------------
+        print('\n[TEST 10] Testing --dns-resolver options and wstunnel syntax...')
+        res_dns_valid = subprocess.run(
+            [
+                str(binary), '--check', '-c', str(CONFIG_PATH),
+                '--dns-resolver', 'dns://1.1.1.1',
+                '--dns-resolver', 'dns+https://1.1.1.1?sni=cloudflare-dns.com',
+                '--dns-server', 'dns+tls://8.8.8.8?sni=dns.google',
+                '--dns-resolver', 'system://0.0.0.0',
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding='utf-8',
+        )
+        assert res_dns_valid.returncode == 0, f'Valid --dns-resolver flags failed: {res_dns_valid.stderr}'
+        print('  [PASS] Multi-scheme --dns-resolver (UDP, DoH, DoT, system) accepted')
+
+        res_dns_invalid = subprocess.run(
+            [str(binary), '--check', '-c', str(CONFIG_PATH), '--dns-resolver', 'ftp://1.1.1.1'],
+            capture_output=True,
+            check=False,
+            text=True,
+            encoding='utf-8',
+        )
+        assert res_dns_invalid.returncode != 0, 'Invalid scheme ftp:// should fail validation'
+        print('  [PASS] Invalid resolver scheme rejected as expected')
 
         print('\nALL FUNCTIONAL TESTS PASSED SUCCESSFULLY!\n')
 

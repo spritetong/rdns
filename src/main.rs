@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! RDNS - Modern, Lightweight, Webhook-driven DDNS Client.
 
@@ -51,75 +51,80 @@ fn main() -> ExitCode {
     // 1. Check mode
     if cli.check {
         match load_config(&cli.config) {
-            Ok(mut cfg) => match validate_config(&mut cfg) {
-                Ok(()) => {
-                    let host_interfaces = match ifaddrsx::get_interfaces(false) {
-                        Ok(ifaces) => ifaces,
-                        Err(e) => {
-                            eprintln!("Failed to enumerate host network interfaces: {}", e);
+            Ok(mut cfg) => {
+                if !cli.dns_resolver.is_empty() {
+                    cfg.global.dns_resolver = Some(cli.dns_resolver.clone());
+                }
+                match validate_config(&mut cfg) {
+                    Ok(()) => {
+                        let host_interfaces = match ifaddrsx::get_interfaces(false) {
+                            Ok(ifaces) => ifaces,
+                            Err(e) => {
+                                eprintln!("Failed to enumerate host network interfaces: {}", e);
+                                return ExitCode::FAILURE;
+                            }
+                        };
+
+                        let mut all_matched = true;
+                        for iface in &cfg.interfaces {
+                            let eff_v4 = iface.effective_ipv4_strategy();
+                            if let Some(ref v4) = eff_v4
+                                && v4.enabled
+                                && v4.source == "interface"
+                            {
+                                let pattern = v4.interface.as_deref().unwrap_or(".*");
+                                if let Ok(reg) = regex::Regex::new(pattern) {
+                                    let matched = host_interfaces.iter().any(|hi| {
+                                        reg.is_match(&hi.name) || reg.is_match(hi.friendly_name())
+                                    });
+                                    if !matched {
+                                        eprintln!(
+                                            "Interface validation failed: interface '{}' IPv4 pattern '{}' matched no host network interfaces",
+                                            iface.name, pattern
+                                        );
+                                        all_matched = false;
+                                    }
+                                }
+                            }
+                            let eff_v6 = iface.effective_ipv6_strategy();
+                            if let Some(ref v6) = eff_v6
+                                && v6.enabled
+                                && v6.source == "interface"
+                            {
+                                let pattern = v6.interface.as_deref().unwrap_or(".*");
+                                if let Ok(reg) = regex::Regex::new(pattern) {
+                                    let matched = host_interfaces.iter().any(|hi| {
+                                        reg.is_match(&hi.name) || reg.is_match(hi.friendly_name())
+                                    });
+                                    if !matched {
+                                        eprintln!(
+                                            "Interface validation failed: interface '{}' IPv6 pattern '{}' matched no host network interfaces",
+                                            iface.name, pattern
+                                        );
+                                        all_matched = false;
+                                    }
+                                }
+                            }
+                        }
+
+                        if !all_matched {
                             return ExitCode::FAILURE;
                         }
-                    };
 
-                    let mut all_matched = true;
-                    for iface in &cfg.interfaces {
-                        let eff_v4 = iface.effective_ipv4_strategy();
-                        if let Some(ref v4) = eff_v4
-                            && v4.enabled
-                            && v4.source == "interface"
-                        {
-                            let pattern = v4.interface.as_deref().unwrap_or(".*");
-                            if let Ok(reg) = regex::Regex::new(pattern) {
-                                let matched = host_interfaces.iter().any(|hi| {
-                                    reg.is_match(&hi.name) || reg.is_match(hi.friendly_name())
-                                });
-                                if !matched {
-                                    eprintln!(
-                                        "Interface validation failed: interface '{}' IPv4 pattern '{}' matched no host network interfaces",
-                                        iface.name, pattern
-                                    );
-                                    all_matched = false;
-                                }
-                            }
-                        }
-                        let eff_v6 = iface.effective_ipv6_strategy();
-                        if let Some(ref v6) = eff_v6
-                            && v6.enabled
-                            && v6.source == "interface"
-                        {
-                            let pattern = v6.interface.as_deref().unwrap_or(".*");
-                            if let Ok(reg) = regex::Regex::new(pattern) {
-                                let matched = host_interfaces.iter().any(|hi| {
-                                    reg.is_match(&hi.name) || reg.is_match(hi.friendly_name())
-                                });
-                                if !matched {
-                                    eprintln!(
-                                        "Interface validation failed: interface '{}' IPv6 pattern '{}' matched no host network interfaces",
-                                        iface.name, pattern
-                                    );
-                                    all_matched = false;
-                                }
-                            }
-                        }
+                        println!(
+                            "Configuration '{}' is valid. Interfaces: {}, Tasks: {}",
+                            cli.config.display(),
+                            cfg.interfaces.len(),
+                            cfg.tasks.len()
+                        );
+                        return ExitCode::SUCCESS;
                     }
-
-                    if !all_matched {
+                    Err(e) => {
+                        eprintln!("Configuration validation failed: {}", e);
                         return ExitCode::FAILURE;
                     }
-
-                    println!(
-                        "Configuration '{}' is valid. Interfaces: {}, Tasks: {}",
-                        cli.config.display(),
-                        cfg.interfaces.len(),
-                        cfg.tasks.len()
-                    );
-                    return ExitCode::SUCCESS;
                 }
-                Err(e) => {
-                    eprintln!("Configuration validation failed: {}", e);
-                    return ExitCode::FAILURE;
-                }
-            },
+            }
             Err(e) => {
                 eprintln!("Failed to load configuration: {}", e);
                 return ExitCode::FAILURE;
@@ -129,13 +134,18 @@ fn main() -> ExitCode {
 
     // 2. Load and validate config
     let mut config = match load_config(&cli.config) {
-        Ok(mut cfg) => match validate_config(&mut cfg) {
-            Ok(()) => cfg,
-            Err(e) => {
-                eprintln!("Configuration validation failed: {}", e);
-                return ExitCode::FAILURE;
+        Ok(mut cfg) => {
+            if !cli.dns_resolver.is_empty() {
+                cfg.global.dns_resolver = Some(cli.dns_resolver.clone());
             }
-        },
+            match validate_config(&mut cfg) {
+                Ok(()) => cfg,
+                Err(e) => {
+                    eprintln!("Configuration validation failed: {}", e);
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         Err(e) => {
             eprintln!(
                 "Failed to load configuration from '{}': {}",
@@ -158,16 +168,26 @@ fn main() -> ExitCode {
         config.global.netwatcher = false;
     }
 
+    // Override `no_color` flag
+    if cli.no_color {
+        config.global.no_color = true;
+    }
+
     // 3. Initialize logging
     let filter = if let Some(lvl) = cli.log_level {
-        EnvFilter::new(lvl.as_str())
+        build_env_filter(lvl.as_str())
+    } else if let Ok(env_val) = std::env::var("RUST_LOG") {
+        build_env_filter(&env_val)
     } else {
-        EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(&config.global.log_level))
+        build_env_filter(&config.global.log_level)
     };
+
+    let no_color = config.global.no_color || std::env::var_os("NO_COLOR").is_some();
+
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_ansi(!no_color)
         .init();
 
     tracing::info!("Starting RDNS client v{}", env!("CARGO_PKG_VERSION"));
@@ -232,7 +252,9 @@ fn main() -> ExitCode {
             // Default or --daemon: long-running service with SIGHUP reload support
             let mut current_config = config;
             loop {
-                let lifecycle = Arc::new(LifecycleManager::new(current_config.global.shutdown_timeout));
+                let lifecycle = Arc::new(LifecycleManager::new(
+                    current_config.global.shutdown_timeout,
+                ));
                 let scheduler = match SchedulerService::new(
                     &current_config,
                     state_store.clone(),
@@ -261,7 +283,9 @@ fn main() -> ExitCode {
                         match load_config(&cli.config) {
                             Ok(mut new_cfg) => match validate_config(&mut new_cfg) {
                                 Ok(()) => {
-                                    tracing::info!("Configuration reloaded and validated successfully");
+                                    tracing::info!(
+                                        "Configuration reloaded and validated successfully"
+                                    );
                                     current_config = new_cfg;
                                 }
                                 Err(e) => {
@@ -272,10 +296,7 @@ fn main() -> ExitCode {
                                 }
                             },
                             Err(e) => {
-                                tracing::error!(
-                                    "Failed to read reloaded configuration: {}",
-                                    e
-                                );
+                                tracing::error!("Failed to read reloaded configuration: {}", e);
                             }
                         }
                     }
@@ -283,6 +304,23 @@ fn main() -> ExitCode {
             }
         }
     })
+}
+
+/// Builds an `EnvFilter` that sets the log level for `rdns` while muting noisy
+/// dependency crates (such as `reqwest`, `hickory_resolver`, `hickory_proto`, `hyper`, etc.).
+pub(crate) fn build_env_filter(level: &str) -> EnvFilter {
+    let level = level.trim();
+    if level.eq_ignore_ascii_case("off") {
+        return EnvFilter::new("off");
+    }
+
+    if level.contains('=') || level.contains(',') {
+        return EnvFilter::new(level);
+    }
+
+    EnvFilter::new(format!(
+        "off,rdns={level},reqwest=off,hyper=off,hickory_resolver=off,hickory_proto=off,rustls=off,netwatcher=off"
+    ))
 }
 
 pub(crate) fn build_tokio_runtime(
@@ -317,6 +355,23 @@ pub(crate) fn build_tokio_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_build_env_filter_levels() {
+        let f_off = build_env_filter("off");
+        assert_eq!(f_off.to_string(), "off");
+
+        let f_info = build_env_filter("info");
+        let s_info = f_info.to_string();
+        assert!(s_info.contains("rdns=info"));
+        assert!(s_info.contains("reqwest=off"));
+        assert!(s_info.contains("hickory_resolver=off"));
+
+        let f_custom = build_env_filter("rdns=trace,reqwest=warn");
+        let s_custom = f_custom.to_string();
+        assert!(s_custom.contains("rdns=trace"));
+        assert!(s_custom.contains("reqwest=warn"));
+    }
 
     #[test]
     fn test_build_tokio_runtime_single_thread() {

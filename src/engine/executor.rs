@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Request execution, templating, and dry-run previewing.
 
@@ -77,12 +77,7 @@ impl RequestExecutor {
             );
         }
 
-        let client = crate::engine::build_http_client(
-            self.timeout,
-            proxy,
-            tls_insecure,
-            cacerts,
-        )?;
+        let client = crate::engine::build_http_client(self.timeout, proxy, tls_insecure, cacerts)?;
 
         write_guard.insert(key, client.clone());
         Ok(client)

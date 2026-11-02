@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Configuration data models.
 
@@ -33,8 +33,14 @@ pub struct InterfaceConfig {
     /// Optional shortened retry interval (seconds) when update fails and DNS is inconsistent
     pub retry_interval: Option<u64>,
 
-    /// Optional DNS server for verifying cloud records (e.g. "8.8.8.8", "1.1.1.1:53")
-    pub dns_server: Option<String>,
+    /// Optional DNS resolver(s) for verifying cloud records.
+    /// Supports wstunnel-style formats: dns://, dns+https://, dns+tls://, system://0.0.0.0
+    #[serde(
+        default,
+        alias = "dns_server",
+        deserialize_with = "deserialize_dns_resolvers"
+    )]
+    pub dns_resolver: Option<Vec<String>>,
 
     /// Unified dual-stack IP query profile (auto-detects both IPv4 and IPv6).
     pub ip: Option<IpStrategyConfig>,
@@ -103,10 +109,20 @@ pub struct GlobalConfig {
     #[serde(default = "default_log_level")]
     pub log_level: String,
 
+    /// Disable ANSI color output in logs (default: false)
+    #[serde(default)]
+    pub no_color: bool,
+
     pub proxy: Option<String>,
 
-    /// Global default DNS server for verifying cloud records
-    pub dns_server: Option<String>,
+    /// Global default DNS resolver(s) for verifying cloud records.
+    /// Supports wstunnel-style formats: dns://, dns+https://, dns+tls://, system://0.0.0.0
+    #[serde(
+        default,
+        alias = "dns_server",
+        deserialize_with = "deserialize_dns_resolvers"
+    )]
+    pub dns_resolver: Option<Vec<String>>,
 
     /// Enable event-driven network change detection via netwatcher (default: true)
     #[serde(default = "default_netwatcher")]
@@ -159,8 +175,9 @@ impl Default for GlobalConfig {
             worker_threads: None,
             no_state: None,
             log_level: default_log_level(),
+            no_color: false,
             proxy: None,
-            dns_server: None,
+            dns_resolver: None,
             netwatcher: default_netwatcher(),
             netwatcher_debounce_ms: default_netwatcher_debounce_ms(),
             cacerts: None,
@@ -388,4 +405,81 @@ pub struct WebhookHookConfig {
 
 fn default_post() -> String {
     "POST".to_string()
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StringOrVec {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+pub fn deserialize_dns_resolvers<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<StringOrVec>::deserialize(deserializer)?;
+    Ok(opt.and_then(|sov| match sov {
+        StringOrVec::Single(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                None
+            } else {
+                Some(vec![s.to_string()])
+            }
+        }
+        StringOrVec::Multiple(vec) => {
+            let list: Vec<String> = vec
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if list.is_empty() { None } else { Some(list) }
+        }
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_dns_resolvers_single_string() {
+        let yaml = r#"
+        interval: 300
+        dns_resolver: "dns://1.1.1.1"
+        "#;
+        let cfg: GlobalConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.dns_resolver, Some(vec!["dns://1.1.1.1".to_string()]));
+    }
+
+    #[test]
+    fn test_deserialize_dns_resolvers_multiple_strings() {
+        let yaml = r#"
+        interval: 300
+        dns_resolver:
+          - "dns://1.1.1.1"
+          - "dns+https://1.1.1.1?sni=cloudflare-dns.com"
+          - "dns+tls://8.8.8.8?sni=dns.google"
+        "#;
+        let cfg: GlobalConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.dns_resolver,
+            Some(vec![
+                "dns://1.1.1.1".to_string(),
+                "dns+https://1.1.1.1?sni=cloudflare-dns.com".to_string(),
+                "dns+tls://8.8.8.8?sni=dns.google".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_deserialize_dns_server_alias_backward_compatibility() {
+        let yaml = r#"
+        interval: 300
+        dns_server: "8.8.8.8"
+        "#;
+        let cfg: GlobalConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.dns_resolver, Some(vec!["8.8.8.8".to_string()]));
+    }
 }

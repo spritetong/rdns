@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Sprite Tong <spritetong@gmail.com>
-// SPDX-License-Identifier: GPL-3.0-or-later
-// rdns is licensed under the GNU GPL v3.0 or later.
+// SPDX-License-Identifier: MPL-2.0
+// rdns is licensed under the Mozilla Public License Version 2.0.
 
 //! Scheduler service managing multiple interface IP tasks and their bound Webhooks.
 
@@ -76,15 +76,18 @@ impl SchedulerService {
                     configured_interfaces.push(iface.clone());
                 }
             }
-            let probe_targets: Vec<String> =
-                config.tasks.iter().filter_map(|t| t.domain.clone()).collect();
+            let probe_targets: Vec<String> = config
+                .tasks
+                .iter()
+                .filter_map(|t| t.domain.clone())
+                .collect();
             let watcher = Arc::new(NetworkWatcher::new(
                 Arc::clone(&n),
                 config.global.netwatcher_debounce_ms,
                 configured_interfaces,
                 probe_targets,
                 dns_resolver.clone(),
-                config.global.dns_server.clone(),
+                config.global.dns_resolver.clone(),
             ));
             (Some(watcher), Some(n))
         } else {
@@ -94,9 +97,9 @@ impl SchedulerService {
         for task_cfg in &config.tasks {
             let iface_name = task_cfg.interface.as_deref().unwrap_or(default_iface_name);
             let iface_cfg = config.interfaces.iter().find(|i| i.name == iface_name);
-            let dns_server = iface_cfg
-                .and_then(|i| i.dns_server.clone())
-                .or_else(|| config.global.dns_server.clone());
+            let dns_resolver_cfg = iface_cfg
+                .and_then(|i| i.dns_resolver.clone())
+                .or_else(|| config.global.dns_resolver.clone());
             let normal_interval_secs = iface_cfg
                 .and_then(|i| i.interval)
                 .unwrap_or(default_interval);
@@ -106,7 +109,7 @@ impl SchedulerService {
                 state_store: state_store.clone(),
                 notifier: notifier.clone(),
                 dns_resolver: dns_resolver.clone(),
-                dns_server,
+                dns_resolver_cfg,
                 timeout,
                 normal_interval_secs,
                 dry_run,
@@ -163,9 +166,11 @@ impl SchedulerService {
         if let Some(ref watcher) = self.network_watcher {
             let watcher_clone = Arc::clone(watcher);
             let child_token = self.lifecycle.child_token();
-            self.lifecycle.task_manager().spawn("netwatcher".to_string(), async move {
-                watcher_clone.run_loop(child_token).await;
-            });
+            self.lifecycle
+                .task_manager()
+                .spawn("netwatcher".to_string(), async move {
+                    watcher_clone.run_loop(child_token).await;
+                });
         }
 
         for s in &self.interfaces {
